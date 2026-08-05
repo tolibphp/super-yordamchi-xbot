@@ -4,11 +4,14 @@ Telegram kanal va muhokama guruhidagi foydalanuvchilar faolligini (reaksiyalar v
 
 ## ✨ Imkoniyatlar
 
+- 👥 **Multi-user arxitektura** — har qanday admin botni o'z kanali/guruhiga ulab ishlata oladi
 - 📊 Kanal postlariga bosilgan **reaksiyalarni** avtomatik kuzatish
 - 💬 Muhokama guruhidagi **kommentariyalarni** avtomatik kuzatish
+- 🎰 **777 Jackpot o'yini** — guruhda/kommentda 🎰 stiker/dice tashlab birinchi 777 (Jackpot) tushirgan ishtirokchini avtomatik g'olib deb e'lon qilish
 - 🏆 Haftalik va oylik **tasodifiy g'olib** tanlash
-- ✅ G'olib tanlanishidan oldin **kanal + guruhga a'zolikni** tekshirish
+- ✅ G'olib tanlanishidan oldin **kanal + guruhga a'zolikni** dinamik tekshirish
 - 📈 Faollik **statistikasi** (top 5 foydalanuvchi)
+- 📖 **`/qollanma`** — botning to'liq interaktiv qo'llanmasi
 - 📝 Barcha faolliklarni **SQLite bazasiga** yozish
 
 ## ⚠️ MUHIM: Botni admin qilish

@@ -6,12 +6,14 @@ Barcha handlerlarni ulaydi, bazani ishga tushiradi va pollingni boshlaydi.
 import asyncio
 import logging
 import sys
+from datetime import datetime
+
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 
-from config import BOT_TOKEN
+from config import BOT_TOKEN, ADMIN_ID
 from database import init_db
-from handlers import router
+from handlers import router, set_bot_username
 
 
 def setup_logging() -> None:
@@ -19,7 +21,6 @@ def setup_logging() -> None:
     log_format = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
     date_format = "%Y-%m-%d %H:%M:%S"
 
-    # Root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
 
@@ -54,6 +55,9 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode="HTML"),
     )
 
+    # Bot username'ini olish (inline knopkalar uchun)
+    await set_bot_username(bot)
+
     # Dispatcher va routerlarni ulash
     dp = Dispatcher()
     dp.include_router(router)
@@ -63,24 +67,24 @@ async def main() -> None:
     try:
         # Adminga bot ishga tushganini xabar berish
         try:
-            from config import ADMIN_ID
             await bot.send_message(
                 ADMIN_ID,
-                "✅ Bot muvaffaqiyatli ishga tushdi!\n"
-                f"⏰ {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                f"✅ Bot muvaffaqiyatli ishga tushdi!\n"
+                f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
         except Exception as e:
             logger.warning("Adminga xabar yuborib bo'lmadi: %s", e)
 
-        # message_reaction update turini ham qabul qilish uchun allowed_updates ro'yxati
+        # Barcha kerakli update turlarini qabul qilish
         await dp.start_polling(
             bot,
             allowed_updates=[
                 "message",
                 "message_reaction",
                 "chat_member",
+                "my_chat_member",
             ],
-            drop_pending_updates=True,  # Eski updatelarni tashlab yuborish
+            drop_pending_updates=True,
         )
     finally:
         await bot.session.close()
