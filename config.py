@@ -9,11 +9,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
-ADMIN_ID: int = int(os.getenv("ADMIN_ID", "0"))
+BOT_TOKEN: str = os.getenv("BOT_TOKEN", "").strip().strip('"').strip("'")
+_raw_admin_id = os.getenv("ADMIN_ID", "0").strip().strip('"').strip("'")
 
-# Sozlamalar to'g'ri to'ldirilganini tekshirish
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN .env faylida ko'rsatilmagan!")
-if not ADMIN_ID:
-    raise ValueError("ADMIN_ID .env faylida ko'rsatilmagan!")
+    raise ValueError("BOT_TOKEN ko'rsatilmagan! Railway Variables yoki .env faylida BOT_TOKEN ni to'ldiring.")
+
+# ADMIN_ID ixtiyoriy — agar raqam bo'lsa o'qiydi, bo'lmasa 0 bo'ladi
+ADMIN_ID: int = int(_raw_admin_id) if _raw_admin_id.isdigit() else 0

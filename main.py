@@ -65,15 +65,16 @@ async def main() -> None:
     logger.info("Polling boshlandi. Botni to'xtatish uchun Ctrl+C bosing.")
 
     try:
-        # Adminga bot ishga tushganini xabar berish
-        try:
-            await bot.send_message(
-                ADMIN_ID,
-                f"✅ Bot muvaffaqiyatli ishga tushdi!\n"
-                f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-        except Exception as e:
-            logger.warning("Adminga xabar yuborib bo'lmadi: %s", e)
+        # Adminga bot ishga tushganini xabar berish (agar ADMIN_ID ko'rsatilgan bo'lsa)
+        if ADMIN_ID:
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"✅ Bot muvaffaqiyatli ishga tushdi!\n"
+                    f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+            except Exception as e:
+                logger.warning("Adminga xabar yuborib bo'lmadi: %s", e)
 
         # Barcha kerakli update turlarini qabul qilish
         await dp.start_polling(

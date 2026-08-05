@@ -163,6 +163,25 @@ async def get_owner_chats(owner_id: int) -> list[dict]:
     ]
 
 
+async def get_all_linked_chats() -> list[dict]:
+    """Botga ulangan barcha kanallar va guruhlarni qaytaradi (bot egasi uchun)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT chat_id, chat_type, chat_title, owner_id FROM linked_chats ORDER BY added_at DESC"
+        )
+        rows = await cursor.fetchall()
+    return [
+        {
+            "chat_id": row["chat_id"],
+            "chat_type": row["chat_type"],
+            "chat_title": row["chat_title"],
+            "owner_id": row["owner_id"],
+        }
+        for row in rows
+    ]
+
+
 # ─────────────────────────────────────────────
 # ACTIVITY — faollik
 # ─────────────────────────────────────────────

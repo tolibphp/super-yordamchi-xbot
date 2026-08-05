@@ -238,8 +238,8 @@ async def _is_group_admin(message: Message, bot: Bot) -> bool:
     """Xabar yuboruvchi shu guruhda admin ekanligini tekshiradi."""
     if not message.from_user:
         return False
-    # Bot egasi har doim admin
-    if message.from_user.id == ADMIN_ID:
+    # Bot egasi (agar ko'rsatilgan bo'lsa) har doim admin
+    if ADMIN_ID and message.from_user.id == ADMIN_ID:
         return True
     try:
         member = await bot.get_chat_member(message.chat.id, message.from_user.id)
@@ -250,29 +250,40 @@ async def _is_group_admin(message: Message, bot: Bot) -> bool:
 
 @router.message(Command("tekshir"))
 async def cmd_tekshir(message: Message, bot: Bot) -> None:
-    """Bot sozlamalarini tekshirish (faqat bot egasi)."""
-    if not message.from_user or message.from_user.id != ADMIN_ID:
+    """Bot sozlamalarini va barcha ulangan chatlarni tekshirish (faqat bot egasi)."""
+    if not ADMIN_ID or not message.from_user or message.from_user.id != ADMIN_ID:
         return
 
-    from database import get_owner_chats
+    from database import get_all_linked_chats
 
-    lines = ["🔍 <b>Bot sozlamalari tekshiruvi:</b>\n"]
+    lines = ["🔍 <b>Bot diagnostikasi va ulangan chatlar:</b>\n"]
 
     try:
         me = await bot.get_me()
-        lines.append(f"✅ Bot: @{me.username} ({me.first_name})")
+        lines.append(f"🤖 <b>Bot:</b> @{me.username} ({me.first_name})")
+        lines.append(f"👑 <b>Bot egasi ID:</b> <code>{ADMIN_ID}</code>")
     except Exception as e:
         lines.append(f"❌ Bot xatosi: {e}")
 
     # Bazadagi barcha ulangan chatlar
-    all_chats = await get_owner_chats(ADMIN_ID)
+    all_chats = await get_all_linked_chats()
     if all_chats:
-        lines.append(f"\n📋 Ulangan chatlar ({len(all_chats)}):")
-        for chat in all_chats:
-            emoji = "📢" if chat["chat_type"] == "channel" else "💬"
-            lines.append(f"  {emoji} {chat['chat_title']} (<code>{chat['chat_id']}</code>)")
+        channels = [c for c in all_chats if c["chat_type"] == "channel"]
+        groups = [c for c in all_chats if c["chat_type"] == "group"]
+
+        lines.append(f"\n📊 <b>Jami ulangan chatlar: {len(all_chats)} ta</b>")
+        if channels:
+            lines.append(f"\n📢 <b>Kanallar ({len(channels)} ta):</b>")
+            for c in channels:
+                lines.append(f"  • {c['chat_title'] or 'Nomsiz'} (<code>{c['chat_id']}</code>)")
+
+        if groups:
+            lines.append(f"\n💬 <b>Guruhlar ({len(groups)} ta):</b>")
+            for g in groups:
+                lines.append(f"  • {g['chat_title'] or 'Nomsiz'} (<code>{g['chat_id']}</code>)")
     else:
-        lines.append("\n⚠️ Hali hech qanday kanal/guruh ulanmagan.")
+        lines.append("\n⚠️ Hozircha hech qanday kanal yoki guruh ulanmagan.")
+        lines.append("<i>Botni kanal/guruhga admin qilishingiz bilan bu yerda chiqadi.</i>")
 
     await message.reply("\n".join(lines), parse_mode="HTML")
 
@@ -288,10 +299,14 @@ async def cmd_haftalik_golib(message: Message, bot: Bot) -> None:
     if not await _is_group_admin(message, bot):
         return
 
-    # Bu guruh bazada bormi tekshirish
+    # Bu guruh bazada bo'lmasa, avtomatik ulaymiz
     if not await is_linked_chat(message.chat.id):
-        await message.reply("⚠️ Bu guruh botga ulanmagan. Avval botni admin qiling.")
-        return
+        await add_linked_chat(
+            owner_id=ADMIN_ID or 0,
+            chat_id=message.chat.id,
+            chat_type="group",
+            chat_title=message.chat.title,
+        )
 
     await message.reply("⏳ Haftalik g'olib aniqlanmoqda...")
     logger.info("Admin %s /haftalik_golib berdi (chat=%s).", message.from_user.id, message.chat.id)
@@ -320,8 +335,12 @@ async def cmd_oylik_golib(message: Message, bot: Bot) -> None:
         return
 
     if not await is_linked_chat(message.chat.id):
-        await message.reply("⚠️ Bu guruh botga ulanmagan. Avval botni admin qiling.")
-        return
+        await add_linked_chat(
+            owner_id=ADMIN_ID or 0,
+            chat_id=message.chat.id,
+            chat_type="group",
+            chat_title=message.chat.title,
+        )
 
     await message.reply("⏳ Oylik g'olib aniqlanmoqda...")
     logger.info("Admin %s /oylik_golib berdi (chat=%s).", message.from_user.id, message.chat.id)
@@ -389,9 +408,15 @@ async def on_reaction(event: MessageReactionUpdated) -> None:
         logger.debug("Anonim reaksiya, o'tkazildi. msg=%s", event.message_id)
         return
 
-    # Faqat bazadagi chatlarda kuzatish
+    # Agar bu chat bazada bo'lmasa, avtomatik ro'yxatga olamiz
     if not await is_linked_chat(event.chat.id):
-        return
+        chat_type = "channel" if event.chat.type == ChatType.CHANNEL else "group"
+        await add_linked_chat(
+            owner_id=ADMIN_ID or 0,
+            chat_id=event.chat.id,
+            chat_type=chat_type,
+            chat_title=event.chat.title,
+        )
 
     await log_activity(
         user_id=user.id,
@@ -409,7 +434,7 @@ async def on_group_message(message: Message, bot: Bot) -> None:
     """
     Guruhdagi xabarlarni kuzatadi:
     - Oddiy kommentlarni bazaga yozadi
-    - 777 o'yinini tekshiradi
+    - 777 (🎰) o'yinini tekshiradi va g'olibni tabriklaydi
     """
     if message.from_user is None or message.from_user.is_bot:
         return
@@ -418,20 +443,29 @@ async def on_group_message(message: Message, bot: Bot) -> None:
     if message.text and message.text.startswith("/"):
         return
 
-    # Faqat bazadagi guruhlarda ishlash
+    # Agar bu guruh bazada bo'lmasa, avtomatik ro'yxatga olamiz
     if not await is_linked_chat(message.chat.id):
-        return
+        await add_linked_chat(
+            owner_id=ADMIN_ID or 0,
+            chat_id=message.chat.id,
+            chat_type="group",
+            chat_title=message.chat.title,
+        )
 
     # ── 777 JACKPOT (🎰 DICE) O'YIN TEKSHIRUVI ──
     if message.dice and message.dice.emoji == "🎰":
-        if message.dice.value == 64:  # 64 = Uchta 7 (777 Jackpot)
+        logger.info(
+            "🎰 Dice tashlandi: user=%s (%s), value=%s, chat=%s",
+            message.from_user.id, message.from_user.first_name, message.dice.value, message.chat.id,
+        )
+        if message.dice.value == 64:  # 64 = 777 Jackpot
             reply_msg_id = message.message_id
             if message.reply_to_message:
                 reply_msg_id = message.reply_to_message.message_id
             elif message.message_thread_id:
                 reply_msg_id = message.message_thread_id
 
-            # Bu post/mavzu ostida g'olib bormi?
+            # Bu post/mavzu ostida avval g'olib bo'lganmi?
             already_won = await check_777_winner_exists(message.chat.id, reply_msg_id)
             if not already_won:
                 saved = await save_777_winner(
@@ -443,6 +477,10 @@ async def on_group_message(message: Message, bot: Bot) -> None:
                 if saved:
                     first_name = message.from_user.first_name or "Noma'lum"
                     user_id = message.from_user.id
+
+                    # Baraban aylanishi tugashini biroz kutamiz (2 soniya)
+                    await asyncio.sleep(2.0)
+
                     await message.reply(
                         f"🎰🎰🎰 <b>JACKPOT! 777 TUSHDI!</b>\n\n"
                         f"🎉 Tabriklaymiz, "
@@ -451,7 +489,7 @@ async def on_group_message(message: Message, bot: Bot) -> None:
                         f"Sovg'angizni olish uchun admin bilan bog'laning! 🎁",
                         parse_mode="HTML",
                     )
-                    logger.info("777 Jackpot g'olib: user=%s, chat=%s", user_id, message.chat.id)
+                    logger.info("777 Jackpot g'olib e'lon qilindi: user=%s, chat=%s", user_id, message.chat.id)
 
     # ── FAOLLIKNI BAZAGA YOZISH ──
     await log_activity(
