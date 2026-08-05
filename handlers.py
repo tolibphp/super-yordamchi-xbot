@@ -5,6 +5,8 @@ Multi-user: har kim o'z kanal/guruhida botdan foydalana oladi.
 """
 
 import logging
+import asyncio
+import html
 from aiogram import Router, Bot, F
 from aiogram.types import (
     Message,
@@ -468,28 +470,32 @@ async def on_group_message(message: Message, bot: Bot) -> None:
             # Bu post/mavzu ostida avval g'olib bo'lganmi?
             already_won = await check_777_winner_exists(message.chat.id, reply_msg_id)
             if not already_won:
-                saved = await save_777_winner(
-                    chat_id=message.chat.id,
-                    reply_to_message_id=reply_msg_id,
-                    winner_user_id=message.from_user.id,
-                    winner_first_name=message.from_user.first_name or "Noma'lum",
-                )
-                if saved:
-                    first_name = message.from_user.first_name or "Noma'lum"
-                    user_id = message.from_user.id
+                first_name = message.from_user.first_name or "Noma'lum"
+                safe_name = html.escape(first_name)
+                user_id = message.from_user.id
 
-                    # Baraban aylanishi tugashini biroz kutamiz (2 soniya)
-                    await asyncio.sleep(2.0)
+                try:
+                    # Baraban aylanishi tugashini biroz kutamiz (1.5 soniya)
+                    await asyncio.sleep(1.5)
 
                     await message.reply(
                         f"🎰🎰🎰 <b>JACKPOT! 777 TUSHDI!</b>\n\n"
                         f"🎉 Tabriklaymiz, "
-                        f'<a href="tg://user?id={user_id}">{first_name}</a>! '
+                        f'<a href="tg://user?id={user_id}">{safe_name}</a>! '
                         f"Siz birinchi bo'lib <b>777</b> tushirdingiz va yutdingiz! 🏆\n\n"
                         f"Sovg'angizni olish uchun admin bilan bog'laning! 🎁",
                         parse_mode="HTML",
                     )
+
+                    await save_777_winner(
+                        chat_id=message.chat.id,
+                        reply_to_message_id=reply_msg_id,
+                        winner_user_id=user_id,
+                        winner_first_name=first_name,
+                    )
                     logger.info("777 Jackpot g'olib e'lon qilindi: user=%s, chat=%s", user_id, message.chat.id)
+                except Exception as e:
+                    logger.error("777 tabrik yuborishda xatolik: %s", e, exc_info=True)
 
     # ── FAOLLIKNI BAZAGA YOZISH ──
     await log_activity(

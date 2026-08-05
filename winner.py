@@ -6,6 +6,7 @@ Endi multi-user: chat_id va owner_id parametrlari bilan ishlaydi.
 
 import logging
 import random
+import html
 from aiogram import Bot
 
 from database import get_active_users, get_linked_channel_for_group
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 def _format_weekly_winner(user: dict, admin_id: int) -> str:
     """Haftalik g'olib uchun HTML formatdagi post matni."""
     user_id = user["user_id"]
-    first_name = user["first_name"]
+    first_name = html.escape(user["first_name"] or "Noma'lum")
 
     return (
         "🎉 <b>HAFTALIK G'OLIB E'LON QILINDI!</b> 🎉\n"
@@ -37,7 +38,7 @@ def _format_weekly_winner(user: dict, admin_id: int) -> str:
 def _format_monthly_winner(user: dict, admin_id: int) -> str:
     """Oylik g'olib uchun HTML formatdagi post matni."""
     user_id = user["user_id"]
-    first_name = user["first_name"]
+    first_name = html.escape(user["first_name"] or "Noma'lum")
 
     return (
         "🎉 <b>OYLIK G'OLIB — TELEGRAM PREMIUM YUTDINGIZ! 💎</b> 🎉\n"
