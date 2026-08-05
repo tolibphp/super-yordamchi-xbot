@@ -61,6 +61,17 @@ async def main() -> None:
     logger.info("Polling boshlandi. Botni to'xtatish uchun Ctrl+C bosing.")
 
     try:
+        # Adminga bot ishga tushganini xabar berish
+        try:
+            from config import ADMIN_ID
+            await bot.send_message(
+                ADMIN_ID,
+                "✅ Bot muvaffaqiyatli ishga tushdi!\n"
+                f"⏰ {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+        except Exception as e:
+            logger.warning("Adminga xabar yuborib bo'lmadi: %s", e)
+
         # message_reaction update turini ham qabul qilish uchun allowed_updates ro'yxati
         await dp.start_polling(
             bot,
@@ -69,6 +80,7 @@ async def main() -> None:
                 "message_reaction",
                 "chat_member",
             ],
+            drop_pending_updates=True,  # Eski updatelarni tashlab yuborish
         )
     finally:
         await bot.session.close()
