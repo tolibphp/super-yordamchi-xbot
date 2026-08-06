@@ -512,11 +512,12 @@ async def cb_admin_stats(query: CallbackQuery) -> None:
     stats = await get_admin_stats()
     all_chats = await get_all_linked_chats()
     is_sub_on = await is_mandatory_sub_enabled()
+    sub_text = "🟢 Yoniq" if is_sub_on else "🔴 O'chiq"
 
     lines = [
         "📊 <b>BOT TO'LIQ STATISTIKASI</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n",
-        f"⚙️ <b>Majburiy obuna:</b> {'🟢 Yoniq' if is_sub_on else '🔴 O\'chiq'}",
+        f"⚙️ <b>Majburiy obuna:</b> {sub_text}",
         f"📢 <b>Majburiy kanallar:</b> {stats['total_mandatory']} ta",
         f"👥 <b>Faol foydalanuvchilar:</b> {stats['total_users']} ta",
         f"💬 <b>Ulangan guruhlar:</b> {stats['total_groups']} ta",
@@ -916,4 +917,3 @@ async def on_group_message(message: Message, bot: Bot) -> None:
         logger.info("Komment faolligi yozildi: user=%s, chat=%s, msg=%s", message.from_user.id, message.chat.id, message.message_id)
     else:
         logger.debug("Oddiy chat xabari (post kamenti emas), ball yozilmadi. user=%s, chat=%s", message.from_user.id, message.chat.id)
-
