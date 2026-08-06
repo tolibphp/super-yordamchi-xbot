@@ -73,6 +73,8 @@ from winner import pick_winner
 from contest import (
     build_share_data,
     build_contest_post_content,
+    build_contest_results_channel_post,
+    get_contest_results_view,
     draw_contest_winners,
     update_contest_channel_posts,
 )
@@ -217,6 +219,7 @@ async def cmd_start(message: Message, bot: Bot, state: FSMContext) -> None:
 
     referrer_id = 0
     contest_id = 0
+    results_contest_id = 0
 
     if payload.startswith("ref_"):
         ref_str = payload.replace("ref_", "")
@@ -228,6 +231,10 @@ async def cmd_start(message: Message, bot: Bot, state: FSMContext) -> None:
         c_str = payload.replace("contest_", "")
         if c_str.isdigit():
             contest_id = int(c_str)
+    elif payload.startswith("results_"):
+        r_str = payload.replace("results_", "")
+        if r_str.isdigit():
+            results_contest_id = int(r_str)
 
     # 1. Majburiy obunani tekshirish (Gatekeeper)
     is_subbed, missing = await check_all_mandatory_subs(bot, user_id)
@@ -263,7 +270,13 @@ async def cmd_start(message: Message, bot: Bot, state: FSMContext) -> None:
             except Exception as e:
                 logger.warning("Referrer %s ga xabar yuborib bo'lmadi: %s", referrer_id, e)
 
-    # 4. Agar foydalanuvchi ma'lum bir konkursga kirgan bo'lsa
+    # 4. Agar foydalanuvchi natijalarni tekshirish uchun kirgan bo'lsa
+    if results_contest_id > 0:
+        res_text, res_kb = await get_contest_results_view(results_contest_id)
+        await message.answer(res_text, parse_mode="HTML", reply_markup=res_kb)
+        return
+
+    # 5. Agar foydalanuvchi ma'lum bir konkursga kirgan bo'lsa
     if contest_id > 0:
         success, reg_msg, t_num = await register_user_for_contest(contest_id, user_id)
         if success:
@@ -272,7 +285,7 @@ async def cmd_start(message: Message, bot: Bot, state: FSMContext) -> None:
         await message.answer(f"{reg_msg}\n\n━━━━━━━━━━━━━━━━━━━━━\n{dash_text}", parse_mode="HTML", reply_markup=dash_kb)
         return
 
-    # 5. Oddiy holat: Asosiy dashboardni chiqarish
+    # 6. Oddiy holat: Asosiy dashboardni chiqarish
     dash_text, dash_kb = _build_user_dashboard(user_dict, _bot_username)
     await message.answer(dash_text, parse_mode="HTML", reply_markup=dash_kb)
 
@@ -301,6 +314,7 @@ async def cb_user_verify_sub(query: CallbackQuery, bot: Bot) -> None:
 
     referrer_id = 0
     contest_id = 0
+    results_contest_id = 0
     if payload.startswith("ref_"):
         ref_str = payload.replace("ref_", "")
         if ref_str.isdigit():
@@ -311,6 +325,10 @@ async def cb_user_verify_sub(query: CallbackQuery, bot: Bot) -> None:
         c_str = payload.replace("contest_", "")
         if c_str.isdigit():
             contest_id = int(c_str)
+    elif payload.startswith("results_"):
+        r_str = payload.replace("results_", "")
+        if r_str.isdigit():
+            results_contest_id = int(r_str)
 
     user_dict, is_new = await get_or_create_user(user_id, username, first_name, referred_by=referrer_id)
 
@@ -336,6 +354,12 @@ async def cb_user_verify_sub(query: CallbackQuery, bot: Bot) -> None:
                 await bot.send_message(referrer_id, notif_text, parse_mode="HTML")
             except Exception:
                 pass
+
+    if results_contest_id > 0:
+        res_text, res_kb = await get_contest_results_view(results_contest_id)
+        if query.message:
+            await query.message.edit_text(res_text, parse_mode="HTML", reply_markup=res_kb)
+        return
 
     if contest_id > 0:
         success, reg_msg, t_num = await register_user_for_contest(contest_id, user_id)
@@ -1068,9 +1092,11 @@ async def cb_admin_draw_exec(query: CallbackQuery, bot: Bot) -> None:
         return
 
     text = (
-        f"{res['announcement_text']}\n\n"
+        f"🎉 <b>KONKURS YAKUNLANDI VA G'OLIB ANIQLANDI!</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ <i>Konkurs muvaffaqiyatli yakunlandi!</i>"
+        f"📢 <b>Kanalga chiqariladigan qisqa post:</b>\n\n"
+        f"{res['channel_post_text']}\n\n"
+        f"<i>(Post ostida «Natijalarni tekshirish 🔍» tugmasi bo'ladi)</i>"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1092,11 +1118,28 @@ async def cb_admin_draw_exec(query: CallbackQuery, bot: Bot) -> None:
 
 @router.callback_query(F.data.startswith("admin:publish_winners:"))
 async def cb_admin_publish_winners(query: CallbackQuery, bot: Bot) -> None:
-    """G'oliblar e'lonini barcha kanallarga chiqarish."""
-    text_to_post = query.message.text if query.message else ""
-    # "✅ Konkurs muvaffaqiyatli yakunlandi!" qismini olib tashlaymiz
-    if "━━━━━━━━━━━━━━━━━━━━━\n✅ Konkurs" in text_to_post:
-        text_to_post = text_to_post.split("━━━━━━━━━━━━━━━━━━━━━\n✅ Konkurs")[0].strip()
+    """G'oliblar e'lonini (tugmasi bilan) barcha kanallarga chiqarish."""
+    import json
+    contest_id = int(query.data.split(":")[2])
+    contest = await get_contest(contest_id)
+    if not contest:
+        await query.answer("Konkurs topilmadi.", show_alert=True)
+        return
+
+    if not _bot_username:
+        await set_bot_username(bot)
+
+    raw_w = contest.get("winners_data")
+    try:
+        winners = json.loads(raw_w) if isinstance(raw_w, str) else (raw_w or [])
+    except Exception:
+        winners = []
+
+    post_text, post_kb = build_contest_results_channel_post(
+        bot_username=_bot_username,
+        contest=contest,
+        winners=winners,
+    )
 
     channels = await _get_all_target_channels()
     if not channels:
@@ -1106,7 +1149,12 @@ async def cb_admin_publish_winners(query: CallbackQuery, bot: Bot) -> None:
     posted = 0
     for ch in channels:
         try:
-            await bot.send_message(ch["chat_id"], text_to_post, parse_mode="HTML")
+            await bot.send_message(
+                chat_id=ch["chat_id"],
+                text=post_text,
+                parse_mode="HTML",
+                reply_markup=post_kb,
+            )
             posted += 1
         except Exception as e:
             logger.error("Kanalga g'oliblarni yuborishda xato: %s", e)

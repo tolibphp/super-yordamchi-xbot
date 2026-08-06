@@ -176,12 +176,114 @@ async def update_contest_channel_posts(bot: Bot, contest_id: int) -> None:
         logger.error("update_contest_channel_posts umumiy xato: %s", e)
 
 
+def build_contest_results_channel_post(
+    bot_username: str,
+    contest: dict,
+    winners: list[dict],
+) -> tuple[str, InlineKeyboardMarkup]:
+    """
+    Kanalga joylanadigan ixcham, qisqa natijalar posti va 'Natijalarni tekshirish' tugmasini tayyorlaydi.
+    Namunadagidek sodda, ortiqcha uzun matnlarsiz format.
+    """
+    lines = [
+        "<b>Konkurs natijalari:</b> 🥳\n",
+    ]
+    if len(winners) > 1:
+        lines.append("<b>G'oliblar:</b>")
+    else:
+        lines.append("<b>G'olib:</b>")
+
+    for idx, w in enumerate(winners, 1):
+        name = html.escape(w.get("first_name") or "Foydalanuvchi")
+        uname = w.get("username")
+        if uname:
+            clean_u = uname if uname.startswith("@") else f"@{uname}"
+            user_display = f"{name} ({clean_u})"
+        else:
+            user_display = f"{name}"
+        lines.append(f"{idx}. {user_display}")
+
+    text = "\n".join(lines)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="Natijalarni tekshirish 🔍",
+                url=f"https://t.me/{bot_username}?start=results_{contest['id']}",
+            )
+        ]
+    ])
+    return text, kb
+
+
+async def get_contest_results_view(contest_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """
+    Foydalanuvchi kanaldagi 'Natijalarni tekshirish' tugmasini bosib botga kirganda
+    ko'rsatiladigan to'liq va shaffof natijalar kartasi.
+    Ushbu xabarda 'Natijalarni tekshirish' tugmasi qayta bo'lmaydi.
+    """
+    import json
+    contest = await get_contest(contest_id)
+    if not contest:
+        text = "⚠️ <b>Konkurs topilmadi yoki o'chirilgan.</b>"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")]
+        ])
+        return text, kb
+
+    title = contest.get("title") or "Konkurs"
+    prize = contest.get("prize_description") or "Qimmatbaho sovg'alar"
+    participants_count = await get_contest_participants_count(contest_id)
+
+    raw_winners = contest.get("winners_data")
+    winners = []
+    if raw_winners:
+        try:
+            winners = json.loads(raw_winners) if isinstance(raw_winners, str) else raw_winners
+        except Exception:
+            winners = []
+
+    lines = [
+        "📊 <b>KONKURS NATIJALARI TEKSHIRUVI</b>",
+        "━━━━━━━━━━━━━━━━━━━━━",
+        f"🏆 <b>Konkurs:</b> {title}",
+        f"🎁 <b>Sovg'a:</b> {prize}",
+        f"👥 <b>Jami qatnashuvchilar:</b> {participants_count} ta\n",
+    ]
+
+    if winners:
+        if len(winners) > 1:
+            lines.append("🎉 <b>Rasmiy g'oliblar:</b>")
+        else:
+            lines.append("🎉 <b>Rasmiy g'olib:</b>")
+
+        for idx, w in enumerate(winners, 1):
+            name = html.escape(w.get("first_name") or "Foydalanuvchi")
+            uname = w.get("username")
+            ticket = w.get("ticket_number", 1)
+            u_tag = f"@{uname}" if uname else f"ID: {w.get('user_id')}"
+            lines.append(f"{idx}. <b>{name}</b> ({u_tag}) — Chipta #{ticket}")
+    else:
+        lines.append("<i>G'oliblar ro'yxati shakllanmoqda...</i>")
+
+    lines.append("\n━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("✅ <i>Ushbu natijalar shaffof tarzda tasdiqlangan.</i>")
+
+    text = "\n".join(lines)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🎁 Barcha Konkurslar", callback_data="user:contests"),
+            InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu"),
+        ]
+    ])
+    return text, kb
+
+
 async def draw_contest_winners(bot: Bot, contest_id: int) -> dict:
     """
     Konkurs g'oliblarini aniqlaydi:
-    1. Top Referral Winner (Eng ko'p faol odam chaqirgan qatnashuvchi)
-    2. Random Lucky Winner (Shartni bajarganlar orasidan tasodifiy tanlash)
-    Konkursni yakunlaydi va e'lon matnini tayyorlaydi.
+    - Qisqa kanal e'loni va 'Natijalarni tekshirish' tugmasini yaratadi
+    - Natijalarni bazaga saqlaydi va konkursni yakunlaydi.
     """
     contest = await get_contest(contest_id)
     if not contest:
@@ -195,6 +297,10 @@ async def draw_contest_winners(bot: Bot, contest_id: int) -> dict:
             "error": "Konkursda hech qanday ishtirokchi ro'yxatdan o'tmagan.",
         }
 
+    bot_info = await bot.get_me()
+    bot_username = bot_info.username or ""
+
+    # G'olibni aniqlash
     # 1. Top Referral g'olibi (referral_count yoki points bo'yicha eng yuqori)
     sorted_by_ref = sorted(
         participants,
@@ -203,49 +309,45 @@ async def draw_contest_winners(bot: Bot, contest_id: int) -> dict:
     )
     top_winner = sorted_by_ref[0]
 
-    # 2. Random g'olib (agar bir nechta ishtirokchi bo'lsa, top winnerdan boshqasi tanlanadi)
+    winners_list = [
+        {
+            "user_id": top_winner["user_id"],
+            "username": top_winner.get("username"),
+            "first_name": top_winner.get("first_name"),
+            "ticket_number": top_winner.get("ticket_number", 1),
+            "referral_count": top_winner.get("referral_count", 0),
+        }
+    ]
+
+    # Agar referral talabi bo'lsa va ishtirokchilar bir nechta bo'lsa: 2-g'olib (Random) ham qo'shiladi
+    min_refs = contest.get("min_referrals", 0)
     remaining = [p for p in participants if p["user_id"] != top_winner["user_id"]]
-    if remaining:
+    if min_refs > 0 and remaining:
         random_winner = random.choice(remaining)
-    else:
-        random_winner = top_winner
+        winners_list.append({
+            "user_id": random_winner["user_id"],
+            "username": random_winner.get("username"),
+            "first_name": random_winner.get("first_name"),
+            "ticket_number": random_winner.get("ticket_number", 1),
+            "referral_count": random_winner.get("referral_count", 0),
+        })
 
-    # Konkursni yakunlash
-    await end_contest(contest_id)
+    # Konkursni yakunlash va g'oliblarni bazaga saqlash
+    await end_contest(contest_id, winners_data=winners_list)
 
-    # Chiroyli e'lon matni
-    top_name = html.escape(top_winner["first_name"] or "Noma'lum")
-    top_user_tag = f"@{top_winner['username']}" if top_winner["username"] else f'<a href="tg://user?id={top_winner["user_id"]}">{top_name}</a>'
-
-    rand_name = html.escape(random_winner["first_name"] or "Noma'lum")
-    rand_user_tag = f"@{random_winner['username']}" if random_winner["username"] else f'<a href="tg://user?id={random_winner["user_id"]}">{rand_name}</a>'
-
-    title = contest["title"]
-    prize = contest["prize_description"] or "Sovrin"
-
-    announcement_text = (
-        f"🏆 <b>KONKURS G'OLIBLARI E'LON QILINDI!</b> 🎉\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📌 <b>Konkurs:</b> {title}\n"
-        f"🎁 <b>Sovg'a:</b> {prize}\n"
-        f"👥 <b>Jami qatnashuvchilar:</b> {len(participants)} ta\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🥇 <b>TOP REFERRAL G'OLIBI:</b>\n"
-        f"👤 {top_user_tag}\n"
-        f"📊 Taklif qilgan do'stlari: <b>{top_winner.get('referral_count', 0)} ta</b>\n"
-        f"🎟 Chipta raqami: <b>#{top_winner.get('ticket_number', 1)}</b>\n\n"
-        f"🎲 <b>TASODIFIY (RANDOM) OMADLI G'OLIB:</b>\n"
-        f"👤 {rand_user_tag}\n"
-        f"🎟 Chipta raqami: <b>#{random_winner.get('ticket_number', 1)}</b>\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎉 Barcha g'oliblarni chin yurakdan tabriklaymiz! Sovg'angizni qabul qilib olish uchun adminga murojaat qiling! 🎁"
+    # Qisqa kanal posti va tugmasi
+    channel_post_text, channel_post_kb = build_contest_results_channel_post(
+        bot_username=bot_username,
+        contest=contest,
+        winners=winners_list,
     )
 
     return {
         "success": True,
         "contest": contest,
         "participants_count": len(participants),
-        "top_winner": top_winner,
-        "random_winner": random_winner,
-        "announcement_text": announcement_text,
+        "winners": winners_list,
+        "channel_post_text": channel_post_text,
+        "channel_post_kb": channel_post_kb,
+        "announcement_text": channel_post_text,
     }

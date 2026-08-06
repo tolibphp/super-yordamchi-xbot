@@ -136,9 +136,13 @@ async def init_db() -> None:
                 ended_at DATETIME
             )
         """)
-        # Migration: post_messages ustuni yo'q bo'lsa qo'shish
+        # Migration: post_messages va winners_data ustunlari yo'q bo'lsa qo'shish
         try:
             await db.execute("ALTER TABLE contests ADD COLUMN post_messages TEXT DEFAULT '[]'")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE contests ADD COLUMN winners_data TEXT DEFAULT NULL")
         except Exception:
             pass
 
@@ -1035,12 +1039,14 @@ async def get_contest_participants(contest_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-async def end_contest(contest_id: int) -> bool:
-    """Konkursni yakunlangan deb belgilaydi."""
+async def end_contest(contest_id: int, winners_data: list[dict] | dict | None = None) -> bool:
+    """Konkursni yakunlangan deb belgilaydi va g'oliblar ro'yxatini saqlaydi."""
+    import json
+    w_json = json.dumps(winners_data) if winners_data is not None else None
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "UPDATE contests SET is_active = 0, ended_at = datetime('now') WHERE id = ?",
-            (contest_id,),
+            "UPDATE contests SET is_active = 0, winners_data = ?, ended_at = datetime('now') WHERE id = ?",
+            (w_json, contest_id),
         )
         await db.commit()
     return True
