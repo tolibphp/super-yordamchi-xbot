@@ -76,11 +76,13 @@ async def main() -> None:
             except Exception as e:
                 logger.warning("Adminga xabar yuborib bo'lmadi: %s", e)
 
-        # Barcha kerakli update turlarini qabul qilish
+        # Barcha kerakli update turlarini qabul qilish (shu jumladan inline knopkalar uchun callback_query)
         await dp.start_polling(
             bot,
             allowed_updates=[
                 "message",
+                "edited_message",
+                "callback_query",
                 "message_reaction",
                 "chat_member",
                 "my_chat_member",

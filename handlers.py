@@ -503,7 +503,10 @@ async def cb_admin_toggle_sub(query: CallbackQuery) -> None:
     await query.answer(f"Majburiy obuna {status_text}!", show_alert=False)
     text, kb = await _build_admin_menu_text_and_kb()
     if query.message:
-        await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        try:
+            await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data == "admin:stats")
