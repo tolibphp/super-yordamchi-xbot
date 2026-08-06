@@ -376,6 +376,54 @@ async def get_top_users(
     ]
 
 
+async def get_active_users(
+    days: int,
+    chat_id: int | None = None,
+    channel_id: int | None = None,
+) -> list[dict]:
+    """Oxirgi `days` kun ichidagi barcha faol foydalanuvchilar ro'yxatini qaytaradi."""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    since_str = since.strftime("%Y-%m-%d %H:%M:%S")
+
+    where_clauses = ["created_at >= ?"]
+    params: list = [since_str]
+
+    if chat_id is not None and channel_id is not None:
+        where_clauses.append("(chat_id = ? OR chat_id = ?)")
+        params.extend([chat_id, channel_id])
+    elif chat_id is not None:
+        where_clauses.append("chat_id = ?")
+        params.append(chat_id)
+
+    where_sql = " AND ".join(where_clauses)
+    query = f"""
+        SELECT
+            user_id,
+            username,
+            first_name,
+            COUNT(*) AS total
+        FROM activity
+        WHERE {where_sql}
+        GROUP BY user_id
+        ORDER BY total DESC
+    """
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(query, params)
+        rows = await cursor.fetchall()
+
+    return [
+        {
+            "user_id": row["user_id"],
+            "username": row["username"],
+            "first_name": row["first_name"],
+            "total": row["total"],
+        }
+        for row in rows
+    ]
+
+
 # ─────────────────────────────────────────────
 # 777 O'YINI (GAME WINNERS)
 # ─────────────────────────────────────────────
