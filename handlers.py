@@ -925,9 +925,38 @@ async def admin_contest_finish(message: Message, state: FSMContext, bot: Bot) ->
     await message.reply(text, parse_mode="HTML", reply_markup=kb)
 
 
+async def _get_all_target_channels() -> list[dict]:
+    """Konkurslar va e'lonlar uchun barcha kanallarni yig'adi (majburiy + ulangan)."""
+    target_map = {}
+    # 1. Majburiy kanallar
+    m_channels = await get_mandatory_channels()
+    for mc in m_channels:
+        cid = mc.get("channel_id")
+        if not cid:
+            continue
+        try:
+            num_cid = int(cid)
+        except ValueError:
+            num_cid = cid
+        target_map[str(cid)] = {
+            "chat_id": num_cid,
+            "title": mc.get("channel_title") or "Kanal",
+        }
+    # 2. Ulangan chatlar
+    linked = await get_all_linked_chats()
+    for lc in linked:
+        if lc.get("chat_type") == "channel":
+            cid = str(lc["chat_id"])
+            target_map[cid] = {
+                "chat_id": lc["chat_id"],
+                "title": lc.get("chat_title") or "Kanal",
+            }
+    return list(target_map.values())
+
+
 @router.callback_query(F.data.startswith("admin:post_contest:"))
 async def cb_admin_post_contest_to_channel(query: CallbackQuery, bot: Bot) -> None:
-    """Yaratilgan konkursni ulangan kanallarga post qilish."""
+    """Yaratilgan konkursni ulangan / majburiy kanallarga post qilish."""
     contest_id = int(query.data.split(":")[2])
     contest = await get_contest(contest_id)
     if not contest:
@@ -938,14 +967,18 @@ async def cb_admin_post_contest_to_channel(query: CallbackQuery, bot: Bot) -> No
         await set_bot_username(bot)
 
     post_text, post_kb = build_contest_post_content(_bot_username, contest)
-    all_chats = await get_all_linked_chats()
-    channels = [c for c in all_chats if c["chat_type"] == "channel"]
+    channels = await _get_all_target_channels()
 
     if not channels:
-        await query.answer("⚠️ Hozircha ulangan kanallar topilmadi. Botni kanalga admin qiling.", show_alert=True)
+        await query.answer(
+            "⚠️ Hozircha qo'shilgan kanallar topilmadi.\n"
+            "Admin paneldan «➕ Majburiy Kanal Qo'shish» orqali kanalingizni qo'shing va botni kanalga admin qiling.",
+            show_alert=True,
+        )
         return
 
     posted = 0
+    errors = []
     for ch in channels:
         try:
             await bot.send_message(
@@ -957,8 +990,17 @@ async def cb_admin_post_contest_to_channel(query: CallbackQuery, bot: Bot) -> No
             posted += 1
         except Exception as e:
             logger.error("Kanalga post yuborishda xato (%s): %s", ch["chat_id"], e)
+            errors.append(f"{ch['title']}: {e}")
 
-    await query.answer(f"✅ Konkurs {posted} ta kanalga joylandi!", show_alert=True)
+    if posted > 0:
+        await query.answer(f"✅ Konkurs {posted} ta kanalga muvaffaqiyatli joylandi!", show_alert=True)
+    else:
+        err_detail = "\n".join(errors[:2])
+        await query.answer(
+            f"⚠️ Kanalga post yuborib bo'lmadi:\n{err_detail}\n\n"
+            "Bot kanalda admin ekanligi va 'Xabarlar yuborish' huquqi borligini tekshiring.",
+            show_alert=True,
+        )
 
 
 # ── G'OLIBLARNI ANIQLASH (/draw) ──
@@ -1031,8 +1073,10 @@ async def cb_admin_publish_winners(query: CallbackQuery, bot: Bot) -> None:
     if "━━━━━━━━━━━━━━━━━━━━━\n✅ Konkurs" in text_to_post:
         text_to_post = text_to_post.split("━━━━━━━━━━━━━━━━━━━━━\n✅ Konkurs")[0].strip()
 
-    all_chats = await get_all_linked_chats()
-    channels = [c for c in all_chats if c["chat_type"] == "channel"]
+    channels = await _get_all_target_channels()
+    if not channels:
+        await query.answer("⚠️ Kanallar topilmadi.", show_alert=True)
+        return
 
     posted = 0
     for ch in channels:
@@ -1239,6 +1283,15 @@ async def admin_save_mandatory_channel(message: Message, state: FSMContext, bot:
             channel_title=title,
             channel_username=uname,
         )
+        try:
+            await add_linked_chat(
+                owner_id=message.from_user.id if message.from_user else 0,
+                chat_id=int(cid_str),
+                chat_type="channel",
+                chat_title=title,
+            )
+        except Exception:
+            pass
         await state.clear()
 
         text, kb = await _build_admin_menu_text_and_kb()

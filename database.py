@@ -583,10 +583,12 @@ async def get_or_create_user(
 ) -> tuple[dict, bool]:
     """
     Foydalanuvchini bazadan oladi yoki yangisini yaratadi.
-    Qaytaradi: (user_dict, is_new)
+    Qaytaradi: (user_dict, is_new_user: bool)
     """
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
+
+        # 1. Avval mavjudligini tekshiramiz
         cursor = await db.execute("SELECT * FROM bot_users WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
 
@@ -603,15 +605,22 @@ async def get_or_create_user(
                 (username, first_name, user_id),
             )
             await db.commit()
-            return dict(row), False
+            cursor = await db.execute("SELECT * FROM bot_users WHERE user_id = ?", (user_id,))
+            updated_row = await cursor.fetchone()
+            return dict(updated_row), False
 
-        # Yangi foydalanuvchi yaratish
+        # 2. Yangi foydalanuvchi yaratish (ON CONFLICT bilan parallel requestlarda xato bermaydi)
+        ref_val = referred_by if (referred_by != user_id and referred_by > 0) else 0
         await db.execute(
             """
-            INSERT INTO bot_users (user_id, username, first_name, referred_by, points, referral_count, bonus_points, vip_status)
-            VALUES (?, ?, ?, ?, 0, 0, 0, 0)
+            INSERT INTO bot_users (user_id, username, first_name, referred_by, points, referral_count, bonus_points, vip_status, last_active)
+            VALUES (?, ?, ?, ?, 0, 0, 0, 0, datetime('now'))
+            ON CONFLICT(user_id) DO UPDATE SET
+                username = excluded.username,
+                first_name = excluded.first_name,
+                last_active = datetime('now')
             """,
-            (user_id, username, first_name, referred_by if referred_by != user_id else 0),
+            (user_id, username, first_name, ref_val),
         )
         await db.commit()
 
