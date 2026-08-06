@@ -90,20 +90,20 @@ def build_contest_post_content(
 
     # Shart matni
     if min_refs > 0:
-        shart_text = f"Sharti pastdagi Kanallarga obuna bo'lib va kamida <b>{min_refs} ta do'st</b> taklif qilib <b>QATNASHISH</b> tugmasini bosing ⬇️"
+        shart_text = f"📌 <b>Qatnashish sharti:</b>\nPastdagi kanallarga obuna bo'ling va kamida <b>{min_refs} ta do'st</b> taklif qilib <b>«QATNASHISH»</b> tugmasini bosing ⬇️"
     else:
-        shart_text = "Sharti pastdagi Kanallarga obuna bolib <b>QATNASHISH</b> tugmasini bosing ⬇️"
+        shart_text = "📌 <b>Qatnashish sharti:</b>\nPastdagi kanallarga obuna bo'lib <b>«QATNASHISH»</b> tugmasini bosing ⬇️"
 
     text = (
-        f"<b>{title}</b>\n"
-        f"🎁 <b>Yutuq:</b> {prize} 🧸 / 💝\n\n"
+        f"🎉 <b>{title}</b>\n"
+        f"🎁 <b>Sovg'a:</b> {prize}\n\n"
         f"{shart_text}\n\n"
         f"{channels_block}\n\n"
-        f"<i>Hammaga omad hozir tugaydi</i> 🔴"
+        f"✨ <i>Barchaga omad tilaymiz!</i>"
     )
 
     # Jonli tugma: QATNASHISH (15)
-    btn_label = f"QATNASHISH ({participant_count})" if participant_count > 0 else "QATNASHISH (0)"
+    btn_label = f"🎁 QATNASHISH ({participant_count})" if participant_count > 0 else "🎁 QATNASHISH (0)"
     keyboard_rows = [
         [
             InlineKeyboardButton(
@@ -143,7 +143,7 @@ async def update_contest_channel_posts(bot: Bot, contest_id: int) -> None:
         bot_info = await bot.get_me()
         bot_uname = bot_info.username or ""
 
-        btn_label = f"QATNASHISH ({count})"
+        btn_label = f"🎁 QATNASHISH ({count})"
         min_refs = contest.get("min_referrals", 0)
 
         kb_rows = [

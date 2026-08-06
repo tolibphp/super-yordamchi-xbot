@@ -835,7 +835,7 @@ async def cb_admin_new_contest_step2(query: CallbackQuery, state: FSMContext) ->
     if c_type == "instant":
         await state.update_data(min_referrals=0)
         await state.set_state(AdminStates.contest_title)
-        prompt = "✍️ <b>Konkurs nomini kiriting:</b>\n(Masalan: <i>NFT GIFT O'YINLAR</i>)"
+        prompt = "✍️ <b>Konkurs nomini kiriting:</b>\n(Masalan: <i>Telegram Stars Konkursi</i>)"
     elif c_type == "premium":
         await state.update_data(min_referrals=50)
         await state.set_state(AdminStates.contest_title)
@@ -1281,10 +1281,9 @@ async def cb_admin_add_channel(query: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.waiting_for_channel_input)
     text = (
         "📢 <b>Yangi majburiy kanal(lar) qo'shish:</b>\n\n"
-        "Kanal username'larini yoki ID larini yuboring.\n"
-        "<i>Bir nechta kanalni bir vaqtda probel yoki yangi qatorda yuborishingiz mumkin:</i>\n\n"
-        "Misol:\n"
-        "<code>@kibrkuGift @qalb_stars @FixSIMNews @ynsvvvvv</code>\n\n"
+        "Kanal username'ini yoki ID sini yuboring.\n"
+        "<i>Bir nechta kanal bo'lsa, ularni probel yoki yangi qatorda yozishingiz mumkin:</i>\n\n"
+        "Misol: <code>@tolibjon_life</code> yoki <code>-1001234567890</code>\n\n"
         "<i>Eslatma: Bot ushbu kanallarning barchasida admin bo'lishi shart!</i>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
