@@ -437,13 +437,14 @@ async def cb_user_profile(query: CallbackQuery, bot: Bot) -> None:
     # Konkurslarga loyiqlik (Eligibility)
     gift_status = "✅ Tayyor (Qatnasha olasiz)" if refs >= 30 else f"⏳ Yana {30 - refs} ta do'st kerak"
     prem_status = "✅ Tayyor (Qatnasha olasiz)" if refs >= 50 else f"⏳ Yana {50 - refs} ta do'st kerak"
+    vip_label = "👑 VIP Foydalanuvchi" if is_vip else "Oddiy A'zo"
 
     text = (
         f"👤 <b>SIZNING SHAXSIY PROFILINGIZ</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
         f"👤 <b>Ism:</b> {name}\n"
-        f"👑 <b>Status:</b> {'👑 VIP Foydalanuvchi' if is_vip else 'Oddiy A\'zo'}\n"
+        f"👑 <b>Status:</b> {vip_label}\n"
         f"📅 <b>Qo'shilgan sana:</b> {joined}\n\n"
         f"📊 <b>HISOB STATISTIKASI:</b>\n"
         f"💰 <b>Jami ballar:</b> <b>{pts}</b> ball\n"
@@ -716,13 +717,14 @@ async def _build_admin_menu_text_and_kb() -> tuple[str, InlineKeyboardMarkup]:
     is_sub_on = await is_mandatory_sub_enabled()
     sub_icon = "🟢" if is_sub_on else "🔴"
     sub_action_text = "Majburiy obunani o'chirish" if is_sub_on else "Majburiy obunani yoqish"
+    sub_status_label = "YONIQ" if is_sub_on else "O'CHIQ"
 
     text = (
         "👑 <b>ADMIN BOSHQARUV PANELI (SUPER ENGINE)</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "Bu yerdan barcha konkurslarni yaratish, g'oliblarni aniqlash, "
         "promokodlar va majburiy kanallarni boshqarishingiz mumkin.\n\n"
-        f"⚙️ <b>Majburiy obuna:</b> {sub_icon} {'YONIQ' if is_sub_on else 'O\'CHIQ'}\n"
+        f"⚙️ <b>Majburiy obuna:</b> {sub_icon} {sub_status_label}\n"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
