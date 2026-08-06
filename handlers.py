@@ -97,6 +97,7 @@ class AdminStates(StatesGroup):
     promo_max_uses = State()
     daily_post_url = State()
     broadcast_text = State()
+    draw_custom_count = State()
 
 
 class UserStates(StatesGroup):
@@ -281,8 +282,11 @@ async def cmd_start(message: Message, bot: Bot, state: FSMContext) -> None:
         success, reg_msg, t_num = await register_user_for_contest(contest_id, user_id)
         if success:
             await update_contest_channel_posts(bot, contest_id)
-        dash_text, dash_kb = _build_user_dashboard(user_dict, _bot_username)
-        await message.answer(f"{reg_msg}\n\n━━━━━━━━━━━━━━━━━━━━━\n{dash_text}", parse_mode="HTML", reply_markup=dash_kb)
+        reg_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🎁 Barcha Konkurslar", callback_data="user:contests")],
+            [InlineKeyboardButton(text="👤 Mening Profilim", callback_data="user:profile")],
+        ])
+        await message.answer(reg_msg, parse_mode="HTML", reply_markup=reg_kb)
         return
 
     # 6. Oddiy holat: Asosiy dashboardni chiqarish
@@ -365,9 +369,12 @@ async def cb_user_verify_sub(query: CallbackQuery, bot: Bot) -> None:
         success, reg_msg, t_num = await register_user_for_contest(contest_id, user_id)
         if success:
             await update_contest_channel_posts(bot, contest_id)
-        dash_text, dash_kb = _build_user_dashboard(user_dict, _bot_username)
+        reg_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🎁 Barcha Konkurslar", callback_data="user:contests")],
+            [InlineKeyboardButton(text="👤 Mening Profilim", callback_data="user:profile")],
+        ])
         if query.message:
-            await query.message.edit_text(f"{reg_msg}\n\n━━━━━━━━━━━━━━━━━━━━━\n{dash_text}", parse_mode="HTML", reply_markup=dash_kb)
+            await query.message.edit_text(reg_msg, parse_mode="HTML", reply_markup=reg_kb)
         return
 
     dash_text, dash_kb = _build_user_dashboard(user_dict, _bot_username)
@@ -1070,7 +1077,7 @@ async def cb_admin_draw_list(query: CallbackQuery) -> None:
             buttons.append([
                 InlineKeyboardButton(
                     text=f"🏆 {c['title'][:25]}",
-                    callback_data=f"admin:draw_exec:{c['id']}",
+                    callback_data=f"admin:draw_choose:{c['id']}",
                 )
             ])
         buttons.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="admin:menu")])
@@ -1081,22 +1088,96 @@ async def cb_admin_draw_list(query: CallbackQuery) -> None:
     await query.answer()
 
 
-@router.callback_query(F.data.startswith("admin:draw_exec:"))
-async def cb_admin_draw_exec(query: CallbackQuery, bot: Bot) -> None:
-    """Tanlangan konkurs bo'yicha g'oliblarni aniqlash."""
+@router.callback_query(F.data.startswith("admin:draw_choose:"))
+async def cb_admin_draw_choose(query: CallbackQuery, state: FSMContext) -> None:
+    """G'oliblar sonini tanlash menyusi."""
+    await state.clear()
     contest_id = int(query.data.split(":")[2])
-    res = await draw_contest_winners(bot, contest_id)
-
-    if not res["success"]:
-        await query.answer(f"Xato: {res.get('error')}", show_alert=True)
+    contest = await get_contest(contest_id)
+    if not contest:
+        await query.answer("Konkurs topilmadi.", show_alert=True)
         return
 
+    count = await get_contest_participants_count(contest_id)
+
     text = (
-        f"🎉 <b>KONKURS YAKUNLANDI VA G'OLIB ANIQLANDI!</b>\n"
+        f"🎲 <b>G'OLIBLAR SONINI TANLASH</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📢 <b>Kanalga chiqariladigan qisqa post:</b>\n\n"
+        f"🏆 <b>Konkurs:</b> {contest['title']}\n"
+        f"🎁 <b>Sovg'a:</b> {contest.get('prize_description') or 'Telegram Premium'}\n"
+        f"👥 <b>Jami ishtirokchilar:</b> {count} ta\n\n"
+        f"Ushbu konkursdan nechta g'olib aniqlansin?"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🥇 1 ta g'olib", callback_data=f"admin:draw_calc:{contest_id}:1"),
+            InlineKeyboardButton(text="👥 2 ta g'olib", callback_data=f"admin:draw_calc:{contest_id}:2"),
+        ],
+        [
+            InlineKeyboardButton(text="👥 3 ta g'olib", callback_data=f"admin:draw_calc:{contest_id}:3"),
+            InlineKeyboardButton(text="👥 5 ta g'olib", callback_data=f"admin:draw_calc:{contest_id}:5"),
+        ],
+        [
+            InlineKeyboardButton(text="👥 10 ta g'olib", callback_data=f"admin:draw_calc:{contest_id}:10"),
+            InlineKeyboardButton(text="✍️ Boshqa son kiritish", callback_data=f"admin:draw_custom:{contest_id}"),
+        ],
+        [
+            InlineKeyboardButton(text="⬅️ Orqaga", callback_data="admin:draw_list"),
+        ],
+    ])
+
+    if query.message:
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("admin:draw_custom:"))
+async def cb_admin_draw_custom(query: CallbackQuery, state: FSMContext) -> None:
+    """G'oliblar sonini qo'lda kiritish."""
+    contest_id = int(query.data.split(":")[2])
+    await state.set_state(AdminStates.draw_custom_count)
+    await state.update_data(draw_contest_id=contest_id)
+
+    text = (
+        "✍️ <b>Nechta g'olib aniqlansin?</b>\n\n"
+        "Iltimos, g'oliblar sonini raqamda yozib yuboring (masalan: <code>4</code> yoki <code>7</code>):"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Bekor qilish", callback_data=f"admin:draw_choose:{contest_id}")]
+    ])
+    if query.message:
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await query.answer()
+
+
+async def _render_draw_preview(
+    bot: Bot,
+    target: Message | CallbackQuery,
+    contest_id: int,
+    winner_count: int,
+) -> None:
+    """G'oliblarni hisoblash, xabarni chiqarish va qayta aniqlash (re-roll) imkonini beruvchi yordamchi funksiya."""
+    res = await draw_contest_winners(bot, contest_id, winner_count=winner_count, save_to_db=True)
+    if not res["success"]:
+        err_msg = f"❌ Xato: {res.get('error', 'G\'oliblarni aniqlab bo\'lmadi')}"
+        if isinstance(target, CallbackQuery):
+            await target.answer(err_msg, show_alert=True)
+        else:
+            await target.reply(err_msg)
+        return
+
+    contest = res["contest"]
+    winners = res["winners"]
+
+    text = (
+        f"🎉 <b>G'OLIBLAR ANIQLANDI!</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏆 <b>Konkurs:</b> {contest['title']}\n"
+        f"👥 <b>G'oliblar soni:</b> {len(winners)} ta\n\n"
+        f"📢 <b>Kanalga chiqadigan qisqa post ko'rinishi:</b>\n\n"
         f"{res['channel_post_text']}\n\n"
-        f"<i>(Post ostida «Natijalarni tekshirish 🔍» tugmasi bo'ladi)</i>"
+        f"<i>(Agar ushbu natijalar yoqmasa, «🔄 Qayta aniqlash» tugmasini bosib yangi g'oliblarni tanlashingiz mumkin)</i>"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1107,13 +1188,64 @@ async def cb_admin_draw_exec(query: CallbackQuery, bot: Bot) -> None:
             )
         ],
         [
+            InlineKeyboardButton(
+                text="🔄 Qayta aniqlash (Re-roll)",
+                callback_data=f"admin:draw_calc:{contest_id}:{winner_count}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="⚙️ G'oliblar sonini o'zgartirish",
+                callback_data=f"admin:draw_choose:{contest_id}",
+            )
+        ],
+        [
             InlineKeyboardButton(text="⬅️ Admin Menyu", callback_data="admin:menu"),
         ],
     ])
 
-    if query.message:
-        await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-    await query.answer()
+    if isinstance(target, CallbackQuery):
+        if target.message:
+            await target.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        await target.answer()
+    else:
+        await target.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@router.message(AdminStates.draw_custom_count)
+async def msg_admin_draw_custom_count(message: Message, state: FSMContext, bot: Bot) -> None:
+    """Admin tomonidan yuborilgan g'oliblar sonini qabul qilish."""
+    text_val = (message.text or "").strip()
+    if not text_val.isdigit() or int(text_val) <= 0:
+        await message.reply("⚠️ Iltimos, faqat musbat butun son kiriting (masalan: <code>3</code>):", parse_mode="HTML")
+        return
+
+    winner_count = int(text_val)
+    data = await state.get_data()
+    contest_id = data.get("draw_contest_id")
+    await state.clear()
+
+    if not contest_id:
+        await message.reply("⚠️ Konkurs ma'lumoti topilmadi.")
+        return
+
+    await _render_draw_preview(bot, message, contest_id, winner_count)
+
+
+@router.callback_query(F.data.startswith("admin:draw_calc:"))
+async def cb_admin_draw_calc(query: CallbackQuery, bot: Bot) -> None:
+    """Belgilangan g'oliblar soni bo'yicha hisoblash yoki qayta aniqlash (Re-roll)."""
+    parts = query.data.split(":")
+    contest_id = int(parts[2])
+    winner_count = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 1
+    await _render_draw_preview(bot, query, contest_id, winner_count)
+
+
+@router.callback_query(F.data.startswith("admin:draw_exec:"))
+async def cb_admin_draw_exec(query: CallbackQuery, bot: Bot) -> None:
+    """Eski draw_exec chaqiruvlari uchun yo'naltirish."""
+    contest_id = int(query.data.split(":")[2])
+    await _render_draw_preview(bot, query, contest_id, 1)
 
 
 @router.callback_query(F.data.startswith("admin:publish_winners:"))
@@ -1583,16 +1715,29 @@ async def cmd_tekshir(message: Message, bot: Bot) -> None:
 
 
 async def _is_group_admin(message: Message, bot: Bot) -> bool:
-    """Foydalanuvchi guruh admini yoki bot egasi ekanligini tekshiradi."""
+    """Foydalanuvchi guruh admini, kanal egasi yoki tizim xabari ekanligini tekshiradi."""
+    # 1. Avtomatik kanal posti
+    if getattr(message, "is_automatic_forward", False):
+        return True
+    # 2. Kanal nomidan yuborilgan xabar
+    if message.sender_chat is not None:
+        return True
+    # 3. Foydalanuvchi ma'lumoti yo'q yoki Telegram tizim akkauntlari
     if not message.from_user:
-        return False
+        return True
+    if message.from_user.id in (777000, 1087968824):
+        return True
+    # 4. Bot egasi (ADMIN_ID)
     if ADMIN_ID and message.from_user.id == ADMIN_ID:
         return True
+    # 5. Guruh admini yoki egasi
     try:
         member = await bot.get_chat_member(message.chat.id, message.from_user.id)
-        return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR)
-    except Exception:
-        return False
+        if member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR):
+            return True
+    except Exception as e:
+        logger.debug("Chat member statusini aniqlashda xato: %s", e)
+    return False
 
 
 # ─────────────────────────────────────────────
@@ -1697,7 +1842,15 @@ async def on_reaction(event: MessageReactionUpdated) -> None:
 @router.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
 async def on_group_message(message: Message, bot: Bot) -> None:
     """Guruhdagi xabarlar (majburiy obuna tekshiruvi, 777 o'yini, post kamentlari)."""
+    # 1. Avtomatik kanal forvardlari yoki kanal nomidan yuborilgan xabarlarni zudlik bilan o'tkazib yuborish
+    if getattr(message, "is_automatic_forward", False) or message.sender_chat is not None:
+        return
+
     if message.from_user is None or message.from_user.is_bot:
+        return
+
+    # Telegram tizim akkauntlari (Anonymous Admin va Telegram Service)
+    if message.from_user.id in (777000, 1087968824):
         return
 
     if message.text and message.text.startswith("/"):
@@ -1711,7 +1864,7 @@ async def on_group_message(message: Message, bot: Bot) -> None:
             chat_title=message.chat.title,
         )
 
-    # 1. Majburiy obuna tekshiruvi
+    # 2. Majburiy obuna tekshiruvi (oddiy a'zolar uchun)
     is_admin = await _is_group_admin(message, bot)
     if not is_admin:
         is_subbed, missing = await check_all_mandatory_subs(bot, message.from_user.id)

@@ -279,11 +279,17 @@ async def get_contest_results_view(contest_id: int) -> tuple[str, InlineKeyboard
     return text, kb
 
 
-async def draw_contest_winners(bot: Bot, contest_id: int) -> dict:
+async def draw_contest_winners(
+    bot: Bot,
+    contest_id: int,
+    winner_count: int = 1,
+    save_to_db: bool = True,
+) -> dict:
     """
-    Konkurs g'oliblarini aniqlaydi:
+    Konkurs g'oliblarini (bir yoki bir nechta) aniqlaydi:
+    - winner_count: Aniqlanadigan g'oliblar soni
     - Qisqa kanal e'loni va 'Natijalarni tekshirish' tugmasini yaratadi
-    - Natijalarni bazaga saqlaydi va konkursni yakunlaydi.
+    - save_to_db: Natijalarni bazaga saqlash va konkursni yakunlash
     """
     contest = await get_contest(contest_id)
     if not contest:
@@ -291,7 +297,8 @@ async def draw_contest_winners(bot: Bot, contest_id: int) -> dict:
 
     participants = await get_contest_participants(contest_id)
     if not participants:
-        await end_contest(contest_id)
+        if save_to_db:
+            await end_contest(contest_id)
         return {
             "success": False,
             "error": "Konkursda hech qanday ishtirokchi ro'yxatdan o'tmagan.",
@@ -300,40 +307,57 @@ async def draw_contest_winners(bot: Bot, contest_id: int) -> dict:
     bot_info = await bot.get_me()
     bot_username = bot_info.username or ""
 
-    # G'olibni aniqlash
-    # 1. Top Referral g'olibi (referral_count yoki points bo'yicha eng yuqori)
-    sorted_by_ref = sorted(
-        participants,
-        key=lambda p: (p.get("referral_count", 0), p.get("points", 0)),
-        reverse=True,
-    )
-    top_winner = sorted_by_ref[0]
+    winner_count = max(1, winner_count)
+    total_p = len(participants)
+    actual_count = min(winner_count, total_p)
 
-    winners_list = [
-        {
+    winners_list: list[dict] = []
+    min_refs = contest.get("min_referrals", 0)
+
+    # 1. Agar virusli (referal talab qilinadigan) konkurs bo'lsa:
+    # 1-o'ringa eng ko'p referal yiqqan Top ishtirokchi chiqadi
+    if min_refs > 0:
+        sorted_by_ref = sorted(
+            participants,
+            key=lambda p: (p.get("referral_count", 0), p.get("points", 0)),
+            reverse=True,
+        )
+        top_winner = sorted_by_ref[0]
+        winners_list.append({
             "user_id": top_winner["user_id"],
             "username": top_winner.get("username"),
             "first_name": top_winner.get("first_name"),
             "ticket_number": top_winner.get("ticket_number", 1),
             "referral_count": top_winner.get("referral_count", 0),
-        }
-    ]
-
-    # Agar referral talabi bo'lsa va ishtirokchilar bir nechta bo'lsa: 2-g'olib (Random) ham qo'shiladi
-    min_refs = contest.get("min_referrals", 0)
-    remaining = [p for p in participants if p["user_id"] != top_winner["user_id"]]
-    if min_refs > 0 and remaining:
-        random_winner = random.choice(remaining)
-        winners_list.append({
-            "user_id": random_winner["user_id"],
-            "username": random_winner.get("username"),
-            "first_name": random_winner.get("first_name"),
-            "ticket_number": random_winner.get("ticket_number", 1),
-            "referral_count": random_winner.get("referral_count", 0),
         })
 
+        remaining = [p for p in participants if p["user_id"] != top_winner["user_id"]]
+        needed_random = actual_count - 1
+        if needed_random > 0 and remaining:
+            selected_randoms = random.sample(remaining, min(len(remaining), needed_random))
+            for rw in selected_randoms:
+                winners_list.append({
+                    "user_id": rw["user_id"],
+                    "username": rw.get("username"),
+                    "first_name": rw.get("first_name"),
+                    "ticket_number": rw.get("ticket_number", 1),
+                    "referral_count": rw.get("referral_count", 0),
+                })
+    else:
+        # Tezkor / Oddiy konkurs bo'lsa: Barcha g'oliblar tasodifiy (Random) aniqlanadi
+        selected_participants = random.sample(participants, actual_count)
+        for sp in selected_participants:
+            winners_list.append({
+                "user_id": sp["user_id"],
+                "username": sp.get("username"),
+                "first_name": sp.get("first_name"),
+                "ticket_number": sp.get("ticket_number", 1),
+                "referral_count": sp.get("referral_count", 0),
+            })
+
     # Konkursni yakunlash va g'oliblarni bazaga saqlash
-    await end_contest(contest_id, winners_data=winners_list)
+    if save_to_db:
+        await end_contest(contest_id, winners_data=winners_list)
 
     # Qisqa kanal posti va tugmasi
     channel_post_text, channel_post_kb = build_contest_results_channel_post(
@@ -345,8 +369,9 @@ async def draw_contest_winners(bot: Bot, contest_id: int) -> dict:
     return {
         "success": True,
         "contest": contest,
-        "participants_count": len(participants),
+        "participants_count": total_p,
         "winners": winners_list,
+        "winner_count": len(winners_list),
         "channel_post_text": channel_post_text,
         "channel_post_kb": channel_post_kb,
         "announcement_text": channel_post_text,
