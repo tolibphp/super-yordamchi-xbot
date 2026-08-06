@@ -127,14 +127,20 @@ async def init_db() -> None:
             CREATE TABLE IF NOT EXISTS contests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
-                contest_type TEXT NOT NULL DEFAULT 'gift' CHECK(contest_type IN ('premium', 'gift', 'custom')),
+                contest_type TEXT NOT NULL DEFAULT 'gift',
                 min_referrals INTEGER NOT NULL DEFAULT 30,
                 prize_description TEXT,
+                post_messages TEXT DEFAULT '[]',
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at DATETIME DEFAULT (datetime('now')),
                 ended_at DATETIME
             )
         """)
+        # Migration: post_messages ustuni yo'q bo'lsa qo'shish
+        try:
+            await db.execute("ALTER TABLE contests ADD COLUMN post_messages TEXT DEFAULT '[]'")
+        except Exception:
+            pass
 
         # Konkurs qatnashuvchilari
         await db.execute("""
@@ -954,8 +960,8 @@ async def register_user_for_contest(contest_id: int, user_id: int) -> tuple[bool
     user_ref_count = user["referral_count"] if user else 0
     min_refs = contest["min_referrals"]
 
-    # Referallar soni yetarlimi?
-    if user_ref_count < min_refs:
+    # Referallar soni yetarlimi? (Faqat min_refs > 0 bo'lganda tekshiriladi)
+    if min_refs > 0 and user_ref_count < min_refs:
         needed = min_refs - user_ref_count
         return (
             False,
@@ -1038,6 +1044,49 @@ async def end_contest(contest_id: int) -> bool:
         )
         await db.commit()
     return True
+
+
+async def get_contest_participants_count(contest_id: int) -> int:
+    """Konkurs qatnashuvchilari sonini qaytaradi (Live counter uchun)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM contest_participants WHERE contest_id = ?",
+            (contest_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+
+async def save_contest_channel_post(contest_id: int, chat_id: int | str, message_id: int) -> None:
+    """Kanalga yuborilgan konkurs postini saqlaydi (Live counter yangilab turish uchun)."""
+    import json
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT post_messages FROM contests WHERE id = ?", (contest_id,))
+        row = await cursor.fetchone()
+        raw = row["post_messages"] if row and row["post_messages"] else "[]"
+        try:
+            posts = json.loads(raw)
+        except Exception:
+            posts = []
+        posts.append({"chat_id": str(chat_id), "message_id": message_id})
+        await db.execute("UPDATE contests SET post_messages = ? WHERE id = ?", (json.dumps(posts), contest_id))
+        await db.commit()
+
+
+async def get_contest_channel_posts(contest_id: int) -> list[dict]:
+    """Konkurs uchun kanal postlari ro'yxatini qaytaradi."""
+    import json
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT post_messages FROM contests WHERE id = ?", (contest_id,))
+        row = await cursor.fetchone()
+        if not row or not row["post_messages"]:
+            return []
+        try:
+            return json.loads(row["post_messages"])
+        except Exception:
+            return []
 
 
 async def get_all_bot_user_ids() -> list[int]:

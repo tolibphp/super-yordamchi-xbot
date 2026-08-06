@@ -1,9 +1,10 @@
 """
-contest.py — Smart Viral Contest tizimi va g'oliblarni aniqlash (Draw) logikasi.
+contest.py — Smart Viral Contest tizimi, vizual kanal posti va g'oliblarni aniqlash logikasi.
 
 Funksiyalar:
-- build_contest_post_content: Kanal/Guruhga yuboriladigan chiroyli konkurs e'lon posti
-- build_share_data: 1-bosishda do'stlarga va guruhlarga ulashish (One-click share)
+- build_contest_post_content: Aynan namunadagidek raqamlangan kanallar va jonli tugmali post
+- update_contest_channel_posts: Kanaldagi e'lon tugmasidagi qatnashuvchilar sonini (Live Counter) yangilash
+- build_share_data: 1-bosishda do'stlarga va guruhlarga ulashish
 - draw_contest_winners: Top-1 va Random g'oliblarni aniqlash va rasmiy e'lon matnini tayyorlash
 """
 
@@ -17,10 +18,22 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from database import (
     get_contest,
     get_contest_participants,
+    get_contest_participants_count,
+    get_contest_channel_posts,
     end_contest,
 )
 
 logger = logging.getLogger(__name__)
+
+_NUMBER_EMOJIS = {
+    1: "1️⃣", 2: "2️⃣", 3: "3️⃣", 4: "4️⃣", 5: "5️⃣",
+    6: "6️⃣", 7: "7️⃣", 8: "8️⃣", 9: "9️⃣", 10: "🔟",
+}
+
+
+def _get_number_emoji(num: int) -> str:
+    """Raqamni emoji ko'rinishida qaytaradi."""
+    return _NUMBER_EMOJIS.get(num, f"{num}️⃣")
 
 
 def build_share_data(bot_username: str, user_id: int) -> tuple[str, str]:
@@ -45,48 +58,122 @@ def build_share_data(bot_username: str, user_id: int) -> tuple[str, str]:
     return share_url, post_text
 
 
-def build_contest_post_content(bot_username: str, contest: dict) -> tuple[str, InlineKeyboardMarkup]:
+def build_contest_post_content(
+    bot_username: str,
+    contest: dict,
+    channels: list[dict] | None = None,
+    participant_count: int = 0,
+) -> tuple[str, InlineKeyboardMarkup]:
     """
-    Kanalga yoki guruhga joylanadigan konkurs e'lon postining matni va tugmasini tayyorlaydi.
+    Kanalga joylanadigan konkurs e'lon postining matni va jonli hisoblagich tugmasini tayyorlaydi.
+    Namunaviy rasmdagi formatda chiroyli va tartibli shakllantiriladi.
     """
     title = contest["title"]
-    c_type = contest["contest_type"]
-    min_refs = contest["min_referrals"]
-    prize = contest["prize_description"] or "Qimmatbaho sovg'alar va Telegram Premium!"
+    c_type = contest.get("contest_type", "gift")
+    min_refs = contest.get("min_referrals", 0)
+    prize = contest.get("prize_description") or "Qimmatbaho sovg'alar va Telegram Premium!"
 
-    badge = "💎 TELEGRAM PREMIUM" if c_type == "premium" else ("🎁 TELEGRAM GIFT" if c_type == "gift" else "🎯 MAXSUS")
+    # Kanallar ro'yxatini chiroyli raqamlar bilan shakllantirish
+    channel_lines = []
+    if channels:
+        for idx, ch in enumerate(channels, 1):
+            num_emo = _get_number_emoji(idx)
+            uname = ch.get("channel_username")
+            t_title = ch.get("channel_title") or ch.get("title") or "Kanal"
+            if uname:
+                clean_uname = uname if uname.startswith("@") else f"@{uname}"
+                channel_lines.append(f"{num_emo} - {clean_uname}")
+            else:
+                channel_lines.append(f"{num_emo} - <b>{t_title}</b>")
+
+    channels_block = "\n".join(channel_lines) if channel_lines else "<i>(Rasmiy kanallarimiz)</i>"
+
+    # Shart matni
+    if min_refs > 0:
+        shart_text = f"Sharti pastdagi Kanallarga obuna bo'lib va kamida <b>{min_refs} ta do'st</b> taklif qilib <b>QATNASHISH</b> tugmasini bosing ⬇️"
+    else:
+        shart_text = "Sharti pastdagi Kanallarga obuna bolib <b>QATNASHISH</b> tugmasini bosing ⬇️"
 
     text = (
-        f"🚀 <b>YANGI VIRAL KONKURS BOSHLANDI!</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🏆 <b>Konkurs:</b> {title}\n"
-        f"🎖 <b>Toifa:</b> {badge}\n"
-        f"🎁 <b>Sovg'a:</b> {prize}\n\n"
-        f"📌 <b>QATNASHISH SHARTLARI:</b>\n"
-        f"1️⃣ Kanalimizga to'liq a'zo bo'lish\n"
-        f"2️⃣ Kamida <b>{min_refs} ta</b> do'stingizni taklif qilish\n\n"
-        f"🔥 <b>G'oliblarni aniqlash:</b>\n"
-        f"🥇 <b>1-O'rin (Top Referal):</b> Eng ko'p do'st taklif qilgan ishtirokchiga!\n"
-        f"🎲 <b>Random Yutuq:</b> Shartni bajargan barcha ishtirokchilar orasidan tasodifiy omadli g'olibga!\n\n"
-        f"👇 <b>Hoziroq pastdagi tugmani bosib qatnashing:</b>"
+        f"<b>{title}</b>\n"
+        f"🎁 <b>Yutuq:</b> {prize} 🧸 / 💝\n\n"
+        f"{shart_text}\n\n"
+        f"{channels_block}\n\n"
+        f"<i>Hammaga omad hozir tugaydi</i> 🔴"
     )
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+    # Jonli tugma: QATNASHISH (15)
+    btn_label = f"QATNASHISH ({participant_count})" if participant_count > 0 else "QATNASHISH (0)"
+    keyboard_rows = [
         [
             InlineKeyboardButton(
-                text="🎁 Konkursda Qatnashish",
+                text=f"{btn_label} ↗️",
                 url=f"https://t.me/{bot_username}?start=contest_{contest['id']}",
             )
-        ],
-        [
+        ]
+    ]
+
+    if min_refs > 0:
+        keyboard_rows.append([
             InlineKeyboardButton(
                 text="🚀 Do'stlarni taklif qilish",
                 url=f"https://t.me/{bot_username}?start=share",
             )
-        ],
-    ])
+        ])
 
+    kb = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
     return text, kb
+
+
+async def update_contest_channel_posts(bot: Bot, contest_id: int) -> None:
+    """
+    Konkursga yangi a'zo qo'shilganda kanal postidagi 'QATNASHISH (X)' tugmasini
+    real vaqtda (Live Counter) avtomatik yangilab qo'yadi.
+    """
+    try:
+        contest = await get_contest(contest_id)
+        if not contest or not contest.get("is_active"):
+            return
+
+        count = await get_contest_participants_count(contest_id)
+        posts = await get_contest_channel_posts(contest_id)
+        if not posts:
+            return
+
+        bot_info = await bot.get_me()
+        bot_uname = bot_info.username or ""
+
+        btn_label = f"QATNASHISH ({count})"
+        min_refs = contest.get("min_referrals", 0)
+
+        kb_rows = [
+            [
+                InlineKeyboardButton(
+                    text=f"{btn_label} ↗️",
+                    url=f"https://t.me/{bot_uname}?start=contest_{contest_id}",
+                )
+            ]
+        ]
+        if min_refs > 0:
+            kb_rows.append([
+                InlineKeyboardButton(
+                    text="🚀 Do'stlarni taklif qilish",
+                    url=f"https://t.me/{bot_uname}?start=share",
+                )
+            ])
+        new_kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+        for p in posts:
+            try:
+                await bot.edit_message_reply_markup(
+                    chat_id=p["chat_id"],
+                    message_id=p["message_id"],
+                    reply_markup=new_kb,
+                )
+            except Exception as e:
+                logger.debug("Live counter yangilashda xato (%s:%s): %s", p.get("chat_id"), p.get("message_id"), e)
+    except Exception as e:
+        logger.error("update_contest_channel_posts umumiy xato: %s", e)
 
 
 async def draw_contest_winners(bot: Bot, contest_id: int) -> dict:

@@ -60,6 +60,9 @@ from database import (
     get_contest,
     register_user_for_contest,
     get_contest_participants,
+    get_contest_participants_count,
+    save_contest_channel_post,
+    get_contest_channel_posts,
     end_contest,
     get_all_bot_user_ids,
     get_bot_setting,
@@ -71,6 +74,7 @@ from contest import (
     build_share_data,
     build_contest_post_content,
     draw_contest_winners,
+    update_contest_channel_posts,
 )
 
 logger = logging.getLogger(__name__)
@@ -262,6 +266,8 @@ async def cmd_start(message: Message, bot: Bot, state: FSMContext) -> None:
     # 4. Agar foydalanuvchi ma'lum bir konkursga kirgan bo'lsa
     if contest_id > 0:
         success, reg_msg, t_num = await register_user_for_contest(contest_id, user_id)
+        if success:
+            await update_contest_channel_posts(bot, contest_id)
         dash_text, dash_kb = _build_user_dashboard(user_dict, _bot_username)
         await message.answer(f"{reg_msg}\n\n━━━━━━━━━━━━━━━━━━━━━\n{dash_text}", parse_mode="HTML", reply_markup=dash_kb)
         return
@@ -333,6 +339,8 @@ async def cb_user_verify_sub(query: CallbackQuery, bot: Bot) -> None:
 
     if contest_id > 0:
         success, reg_msg, t_num = await register_user_for_contest(contest_id, user_id)
+        if success:
+            await update_contest_channel_posts(bot, contest_id)
         dash_text, dash_kb = _build_user_dashboard(user_dict, _bot_username)
         if query.message:
             await query.message.edit_text(f"{reg_msg}\n\n━━━━━━━━━━━━━━━━━━━━━\n{dash_text}", parse_mode="HTML", reply_markup=dash_kb)
@@ -525,12 +533,14 @@ async def cb_user_contests(query: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("user:join:"))
-async def cb_user_join_contest(query: CallbackQuery) -> None:
+async def cb_user_join_contest(query: CallbackQuery, bot: Bot) -> None:
     """Foydalanuvchi konkursda qatnashish tugmasini bosganda."""
     contest_id = int(query.data.split(":")[2])
     user_id = query.from_user.id
 
     success, msg, ticket_num = await register_user_for_contest(contest_id, user_id)
+    if success:
+        await update_contest_channel_posts(bot, contest_id)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -789,16 +799,20 @@ async def cb_admin_new_contest_step1(query: CallbackQuery, state: FSMContext) ->
         "🎁 <b>YANGI KONKURS YARATISH (1/3)</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
         "Qanday turdagi konkurs yaratmoqchisiz?\n\n"
+        "⚡ <b>Tezkor Konkurs</b> — Shartsiz (0 referal), hamma obuna bo'lib 1-bosishda qatnashadi.\n"
+        "🎁 <b>Gift / Yulduzlar Konkursi</b> — Kamida <b>30 ta do'st</b> taklif qilganlar qatnashadi.\n"
         "💎 <b>Telegram Premium Konkurs</b> — Kamida <b>50 ta do'st</b> taklif qilganlar qatnashadi.\n"
-        "🎁 <b>Telegram Gift / Yulduzlar Konkursi</b> — Kamida <b>30 ta do'st</b> taklif qilganlar qatnashadi.\n"
         "🎯 <b>Maxsus Konkurs</b> — O'zingiz istalgan minimal do'stlar sonini belgilaysiz."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="💎 Premium Konkurs (min 50 ref)", callback_data="admin:c_type:premium"),
+            InlineKeyboardButton(text="⚡ Tezkor Konkurs (Shartsiz — 0 ref)", callback_data="admin:c_type:instant"),
         ],
         [
-            InlineKeyboardButton(text="🎁 Gift Konkurs (min 30 ref)", callback_data="admin:c_type:gift"),
+            InlineKeyboardButton(text="🎁 Gift / Yulduzlar Konkursi (min 30 ref)", callback_data="admin:c_type:gift"),
+        ],
+        [
+            InlineKeyboardButton(text="💎 Premium Konkurs (min 50 ref)", callback_data="admin:c_type:premium"),
         ],
         [
             InlineKeyboardButton(text="🎯 Maxsus Konkurs (O'zim kiritaman)", callback_data="admin:c_type:custom"),
@@ -818,7 +832,11 @@ async def cb_admin_new_contest_step2(query: CallbackQuery, state: FSMContext) ->
     c_type = query.data.split(":")[2]
     await state.update_data(contest_type=c_type)
 
-    if c_type == "premium":
+    if c_type == "instant":
+        await state.update_data(min_referrals=0)
+        await state.set_state(AdminStates.contest_title)
+        prompt = "✍️ <b>Konkurs nomini kiriting:</b>\n(Masalan: <i>NFT GIFT O'YINLAR</i>)"
+    elif c_type == "premium":
         await state.update_data(min_referrals=50)
         await state.set_state(AdminStates.contest_title)
         prompt = "✍️ <b>Konkurs nomini kiriting:</b>\n(Masalan: <i>Telegram Premium 3 Oylik Konkurs</i>)"
@@ -899,7 +917,9 @@ async def admin_contest_finish(message: Message, state: FSMContext, bot: Bot) ->
     if not _bot_username:
         await set_bot_username(bot)
 
-    post_text, post_kb = build_contest_post_content(_bot_username, contest_dict)
+    channels = await _get_all_target_channels()
+    p_count = await get_contest_participants_count(contest_id)
+    post_text, post_kb = build_contest_post_content(_bot_username, contest_dict, channels=channels, participant_count=p_count)
 
     text = (
         f"🎉 <b>KONKURS MUVAFFAQIYATLI YARATILDI!</b>\n"
@@ -926,7 +946,7 @@ async def admin_contest_finish(message: Message, state: FSMContext, bot: Bot) ->
 
 
 async def _get_all_target_channels() -> list[dict]:
-    """Konkurslar va e'lonlar uchun barcha kanallarni yig'adi (majburiy + ulangan)."""
+    """Konkurs postlarini yuborish uchun barcha kanallarni (majburiy + ulangan) yig'adi."""
     target_map = {}
     # 1. Majburiy kanallar
     m_channels = await get_mandatory_channels()
@@ -941,22 +961,25 @@ async def _get_all_target_channels() -> list[dict]:
         target_map[str(cid)] = {
             "chat_id": num_cid,
             "title": mc.get("channel_title") or "Kanal",
+            "channel_username": mc.get("channel_username"),
         }
     # 2. Ulangan chatlar
     linked = await get_all_linked_chats()
     for lc in linked:
         if lc.get("chat_type") == "channel":
             cid = str(lc["chat_id"])
-            target_map[cid] = {
-                "chat_id": lc["chat_id"],
-                "title": lc.get("chat_title") or "Kanal",
-            }
+            if cid not in target_map:
+                target_map[cid] = {
+                    "chat_id": lc["chat_id"],
+                    "title": lc.get("chat_title") or "Kanal",
+                    "channel_username": None,
+                }
     return list(target_map.values())
 
 
 @router.callback_query(F.data.startswith("admin:post_contest:"))
 async def cb_admin_post_contest_to_channel(query: CallbackQuery, bot: Bot) -> None:
-    """Yaratilgan konkursni ulangan / majburiy kanallarga post qilish."""
+    """Yaratilgan konkursni ulangan / majburiy kanallarga post qilish va live counter uchun saqlash."""
     contest_id = int(query.data.split(":")[2])
     contest = await get_contest(contest_id)
     if not contest:
@@ -966,9 +989,7 @@ async def cb_admin_post_contest_to_channel(query: CallbackQuery, bot: Bot) -> No
     if not _bot_username:
         await set_bot_username(bot)
 
-    post_text, post_kb = build_contest_post_content(_bot_username, contest)
     channels = await _get_all_target_channels()
-
     if not channels:
         await query.answer(
             "⚠️ Hozircha qo'shilgan kanallar topilmadi.\n"
@@ -977,16 +998,20 @@ async def cb_admin_post_contest_to_channel(query: CallbackQuery, bot: Bot) -> No
         )
         return
 
+    p_count = await get_contest_participants_count(contest_id)
+    post_text, post_kb = build_contest_post_content(_bot_username, contest, channels=channels, participant_count=p_count)
+
     posted = 0
     errors = []
     for ch in channels:
         try:
-            await bot.send_message(
+            sent_msg = await bot.send_message(
                 chat_id=ch["chat_id"],
                 text=post_text,
                 parse_mode="HTML",
                 reply_markup=post_kb,
             )
+            await save_contest_channel_post(contest_id, ch["chat_id"], sent_msg.message_id)
             posted += 1
         except Exception as e:
             logger.error("Kanalga post yuborishda xato (%s): %s", ch["chat_id"], e)
@@ -1252,13 +1277,15 @@ async def admin_broadcast_execute(message: Message, state: FSMContext, bot: Bot)
 
 @router.callback_query(F.data == "admin:add_channel")
 async def cb_admin_add_channel(query: CallbackQuery, state: FSMContext) -> None:
-    """Majburiy kanal qo'shish so'rovi."""
+    """Majburiy kanal qo'shish so'rovi (Bitta yoki birdaniga bir nechta)."""
     await state.set_state(AdminStates.waiting_for_channel_input)
     text = (
-        "📢 <b>Yangi majburiy kanal qo'shish:</b>\n\n"
-        "Kanal username'ini yoki ID sini yuboring:\n"
-        "Misol: <code>@Tolibjon_Life</code> yoki <code>-1001234567890</code>\n\n"
-        "<i>Eslatma: Bot ushbu kanalda admin bo'lishi shart!</i>"
+        "📢 <b>Yangi majburiy kanal(lar) qo'shish:</b>\n\n"
+        "Kanal username'larini yoki ID larini yuboring.\n"
+        "<i>Bir nechta kanalni bir vaqtda probel yoki yangi qatorda yuborishingiz mumkin:</i>\n\n"
+        "Misol:\n"
+        "<code>@kibrkuGift @qalb_stars @FixSIMNews @ynsvvvvv</code>\n\n"
+        "<i>Eslatma: Bot ushbu kanallarning barchasida admin bo'lishi shart!</i>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Bekor qilish", callback_data="admin:menu")],
@@ -1270,45 +1297,64 @@ async def cb_admin_add_channel(query: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(AdminStates.waiting_for_channel_input)
 async def admin_save_mandatory_channel(message: Message, state: FSMContext, bot: Bot) -> None:
-    """Admin kanal kiritganda tekshirish va saqlash."""
+    """Admin kanal(lar) kiritganda tekshirish va barchasini saqlash."""
     raw_input = message.text.strip() if message.text else ""
-    try:
-        chat_info = await bot.get_chat(raw_input)
-        cid_str = str(chat_info.id)
-        title = chat_info.title or raw_input
-        uname = f"@{chat_info.username}" if chat_info.username else None
+    if not raw_input:
+        await message.reply("⚠️ Iltimos, kanal username yoki ID sini yuboring.")
+        return
 
-        await add_mandatory_channel(
-            channel_id=cid_str,
-            channel_title=title,
-            channel_username=uname,
-        )
+    # Probel, vergul yoki yangi qator bo'yicha ajratish
+    tokens = [t.strip(", \t\r\n") for t in raw_input.replace(",", " ").split() if t.strip(", \t\r\n")]
+    if not tokens:
+        await message.reply("⚠️ Hech qanday kanal aniqlanmadi.")
+        return
+
+    added_list = []
+    failed_list = []
+
+    for token in tokens:
         try:
-            await add_linked_chat(
-                owner_id=message.from_user.id if message.from_user else 0,
-                chat_id=int(cid_str),
-                chat_type="channel",
-                chat_title=title,
-            )
-        except Exception:
-            pass
-        await state.clear()
+            chat_info = await bot.get_chat(token)
+            cid_str = str(chat_info.id)
+            title = chat_info.title or token
+            uname = f"@{chat_info.username}" if chat_info.username else None
 
-        text, kb = await _build_admin_menu_text_and_kb()
-        await message.reply(
-            f"✅ <b>Kanal muvaffaqiyatli qo'shildi!</b>\n\n"
-            f"📢 Nomi: <b>{title}</b>\n"
-            f"🆔 ID: <code>{cid_str}</code>\n"
-            f"🔗 Username: {uname or 'Mavjud emas'}",
-            parse_mode="HTML",
-            reply_markup=kb,
-        )
-    except Exception as e:
-        await message.reply(
-            f"❌ Kanalni topib bo'lmadi yoki bot kanalda admin emas: {e}\n\n"
-            f"<i>Kanal username yoki ID si to'g'riligini va bot kanalda admin ekanligini tekshiring.</i>",
-            parse_mode="HTML",
-        )
+            await add_mandatory_channel(
+                channel_id=cid_str,
+                channel_title=title,
+                channel_username=uname,
+            )
+            try:
+                await add_linked_chat(
+                    owner_id=message.from_user.id if message.from_user else 0,
+                    chat_id=int(cid_str),
+                    chat_type="channel",
+                    chat_title=title,
+                )
+            except Exception:
+                pass
+
+            display_name = uname if uname else title
+            added_list.append(f"• <b>{title}</b> ({display_name})")
+        except Exception as e:
+            failed_list.append(f"• <code>{token}</code>: {e}")
+
+    await state.clear()
+    text_menu, kb_menu = await _build_admin_menu_text_and_kb()
+
+    resp_lines = []
+    if added_list:
+        resp_lines.append(f"✅ <b>Qo'shilgan kanallar ({len(added_list)} ta):</b>")
+        resp_lines.extend(added_list)
+        resp_lines.append("")
+
+    if failed_list:
+        resp_lines.append(f"⚠️ <b>Qo'shib bo'lmagan kanallar ({len(failed_list)} ta):</b>")
+        resp_lines.extend(failed_list)
+        resp_lines.append("<i>(Bot kanalda admin ekanligini va username to'g'riligini tekshiring)</i>\n")
+
+    resp_text = "\n".join(resp_lines)
+    await message.reply(resp_text, parse_mode="HTML", reply_markup=kb_menu)
 
 
 @router.callback_query(F.data == "admin:del_channel_list")
@@ -1461,6 +1507,13 @@ async def cmd_tekshir(message: Message, bot: Bot) -> None:
     except Exception as e:
         lines.append(f"❌ Bot xatosi: {e}")
 
+    m_channels = await get_mandatory_channels()
+    if m_channels:
+        lines.append(f"\n🔒 <b>Majburiy kanallar ({len(m_channels)} ta):</b>")
+        for mc in m_channels:
+            uname = f" ({mc['channel_username']})" if mc.get("channel_username") else ""
+            lines.append(f"  • {mc['channel_title']}{uname} (<code>{mc['channel_id']}</code>)")
+
     all_chats = await get_all_linked_chats()
     if all_chats:
         channels = [c for c in all_chats if c["chat_type"] == "channel"]
@@ -1468,7 +1521,7 @@ async def cmd_tekshir(message: Message, bot: Bot) -> None:
 
         lines.append(f"\n📊 <b>Jami ulangan chatlar: {len(all_chats)} ta</b>")
         if channels:
-            lines.append(f"\n📢 <b>Kanallar ({len(channels)} ta):</b>")
+            lines.append(f"\n📢 <b>Kanal e'lonlari uchun ({len(channels)} ta):</b>")
             for c in channels:
                 lines.append(f"  • {c['chat_title'] or 'Nomsiz'} (<code>{c['chat_id']}</code>)")
 
@@ -1476,7 +1529,7 @@ async def cmd_tekshir(message: Message, bot: Bot) -> None:
             lines.append(f"\n💬 <b>Guruhlar ({len(groups)} ta):</b>")
             for g in groups:
                 lines.append(f"  • {g['chat_title'] or 'Nomsiz'} (<code>{g['chat_id']}</code>)")
-    else:
+    elif not m_channels:
         lines.append("\n⚠️ Hozircha hech qanday kanal yoki guruh ulanmagan.")
 
     await message.reply("\n".join(lines), parse_mode="HTML")
