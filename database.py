@@ -3,8 +3,16 @@ database.py — SQLite ma'lumotlar bazasi bilan ishlash (aiosqlite orqali async)
 
 Jadvallar:
 - linked_chats: botni qaysi kanal/guruhlarga ulanganligi
-- activity: foydalanuvchilar reaksiya va kommentariyalari
-- game_winners: 777 o'yini g'oliblari (bir postga faqat 1 g'olib)
+- activity: foydalanuvchilar reaksiya va kommentariyalari (guruh/kanal)
+- game_winners: 777 o'yini g'oliblari
+- mandatory_channels: majburiy a'zo bo'linishi kerak bo'lgan kanallar
+- bot_settings: bot sozlamalari (majburiy obuna, kunlik post linki va h.k.)
+- bot_users: barcha bot foydalanuvchilari, referal ballari va darajalari
+- referrals: taklif qilingan do'stlar va ularning statusi (active / dropped)
+- contests: dinamik konkurslar (Premium, Gift, Custom)
+- contest_participants: konkurs ishtirokchilari va chiptalari
+- daily_post_rewards: kunlik post o'qish uchun mukofotlar
+- promo_codes / promo_claims: yashirin promokodlar tizimi
 """
 
 import os
@@ -84,6 +92,97 @@ async def init_db() -> None:
             VALUES ('mandatory_sub_enabled', '1')
         """)
 
+        # ── SMART VIRAL CONTEST JADVALLARI ──
+
+        # Bot foydalanuvchilari profili
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS bot_users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT NOT NULL,
+                referred_by INTEGER DEFAULT 0,
+                points INTEGER DEFAULT 0,
+                referral_count INTEGER DEFAULT 0,
+                bonus_points INTEGER DEFAULT 0,
+                vip_status INTEGER DEFAULT 0,
+                joined_at DATETIME DEFAULT (datetime('now')),
+                last_active DATETIME DEFAULT (datetime('now'))
+            )
+        """)
+
+        # Referallar jadvali (Anti-Drop va jarima kuzatuvi)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS referrals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                referrer_id INTEGER NOT NULL,
+                referred_id INTEGER NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'dropped')),
+                created_at DATETIME DEFAULT (datetime('now')),
+                dropped_at DATETIME
+            )
+        """)
+
+        # Konkurslar jadvali
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS contests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                contest_type TEXT NOT NULL DEFAULT 'gift' CHECK(contest_type IN ('premium', 'gift', 'custom')),
+                min_referrals INTEGER NOT NULL DEFAULT 30,
+                prize_description TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at DATETIME DEFAULT (datetime('now')),
+                ended_at DATETIME
+            )
+        """)
+
+        # Konkurs qatnashuvchilari
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS contest_participants (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                contest_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                ticket_number INTEGER NOT NULL,
+                joined_at DATETIME DEFAULT (datetime('now')),
+                UNIQUE(contest_id, user_id)
+            )
+        """)
+
+        # Kunlik post o'qish qaydlari
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS daily_post_rewards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                reward_date TEXT NOT NULL,
+                created_at DATETIME DEFAULT (datetime('now')),
+                UNIQUE(user_id, reward_date)
+            )
+        """)
+
+        # Promokodlar
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS promo_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL UNIQUE,
+                reward_points INTEGER NOT NULL DEFAULT 2,
+                max_uses INTEGER NOT NULL DEFAULT 50,
+                used_count INTEGER NOT NULL DEFAULT 0,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at DATETIME DEFAULT (datetime('now'))
+            )
+        """)
+
+        # Promokod ishlatganlar
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS promo_claims (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                promo_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                claimed_at DATETIME DEFAULT (datetime('now')),
+                UNIQUE(promo_id, user_id)
+            )
+        """)
+
         # Indekslar
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_activity_user_id ON activity(user_id)
@@ -97,8 +196,17 @@ async def init_db() -> None:
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_linked_chats_owner ON linked_chats(owner_id)
         """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id)
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_referrals_status ON referrals(status)
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_contest_part_cid ON contest_participants(contest_id)
+        """)
         await db.commit()
-    logger.info("Ma'lumotlar bazasi tayyor.")
+    logger.info("Ma'lumotlar bazasi va Smart Viral Contest jadvallari tayyor.")
 
 
 # ─────────────────────────────────────────────
@@ -148,67 +256,40 @@ async def is_linked_chat(chat_id: int) -> bool:
 
 
 async def get_linked_channel_for_group(group_chat_id: int) -> int | None:
-    """
-    Guruhga bog'langan kanalni topadi.
-    Bir xil owner_id ga tegishli kanallardan birinchisini qaytaradi.
-    """
+    """Guruhga tegishli bo'lgan kanal chat_id sini topadi (bitta owner_id bo'yicha)."""
     async with aiosqlite.connect(DB_PATH) as db:
-        # Avval guruhning owner_id sini olish
         cursor = await db.execute(
-            "SELECT owner_id FROM linked_chats WHERE chat_id = ? AND chat_type = 'group'",
+            "SELECT owner_id FROM linked_chats WHERE chat_id = ? AND chat_type = 'group' LIMIT 1",
             (group_chat_id,),
         )
         row = await cursor.fetchone()
         if not row:
             return None
-
         owner_id = row[0]
 
-        # Shu ownerga tegishli kanalni topish
         cursor = await db.execute(
             "SELECT chat_id FROM linked_chats WHERE owner_id = ? AND chat_type = 'channel' LIMIT 1",
             (owner_id,),
         )
-        row = await cursor.fetchone()
-        return row[0] if row else None
-
-
-async def get_owner_chats(owner_id: int) -> list[dict]:
-    """Berilgan owner_id ga tegishli barcha kanallar va guruhlarni qaytaradi."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT chat_id, chat_type, chat_title FROM linked_chats WHERE owner_id = ?",
-            (owner_id,),
-        )
-        rows = await cursor.fetchall()
-    return [
-        {"chat_id": row["chat_id"], "chat_type": row["chat_type"], "chat_title": row["chat_title"]}
-        for row in rows
-    ]
+        channel_row = await cursor.fetchone()
+        if channel_row:
+            return channel_row[0]
+    return None
 
 
 async def get_all_linked_chats() -> list[dict]:
-    """Botga ulangan barcha kanallar va guruhlarni qaytaradi (bot egasi uchun)."""
+    """Barcha ulangan kanal va guruhlarni qaytaradi."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT chat_id, chat_type, chat_title, owner_id FROM linked_chats ORDER BY added_at DESC"
+            "SELECT chat_id, chat_type, chat_title, added_at FROM linked_chats ORDER BY added_at DESC"
         )
         rows = await cursor.fetchall()
-    return [
-        {
-            "chat_id": row["chat_id"],
-            "chat_type": row["chat_type"],
-            "chat_title": row["chat_title"],
-            "owner_id": row["owner_id"],
-        }
-        for row in rows
-    ]
+    return [dict(r) for r in rows]
 
 
 # ─────────────────────────────────────────────
-# ACTIVITY — faollik
+# FAOLLIK (ACTIVITY) — guruh/kanal faolligi
 # ─────────────────────────────────────────────
 
 async def log_activity(
@@ -219,7 +300,7 @@ async def log_activity(
     message_id: int,
     chat_id: int = 0,
 ) -> None:
-    """Foydalanuvchi faolligini bazaga yozadi."""
+    """Foydalanuvchi faolligini (reaksiya yoki komment) bazaga yozadi."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
@@ -228,65 +309,60 @@ async def log_activity(
             """,
             (user_id, username, first_name, activity_type, message_id, chat_id),
         )
+        # Shuningdek bot_users jadvalida ham aktivlik vaqtini yangilaymiz
+        await db.execute(
+            """
+            INSERT INTO bot_users (user_id, username, first_name, last_active)
+            VALUES (?, ?, ?, datetime('now'))
+            ON CONFLICT(user_id) DO UPDATE SET
+                username = excluded.username,
+                first_name = excluded.first_name,
+                last_active = datetime('now')
+            """,
+            (user_id, username, first_name),
+        )
         await db.commit()
-    logger.info(
-        "Faollik yozildi: user_id=%s, tur=%s, chat_id=%s",
-        user_id, activity_type, chat_id,
-    )
+    logger.info("Faollik yozildi: user_id=%s, tur=%s, chat_id=%s", user_id, activity_type, chat_id)
 
 
-async def get_active_users(days: int, chat_id: int = 0) -> list[dict]:
-    """
-    Oxirgi `days` kun ichida berilgan chatda kamida 1 marta
-    faollik ko'rsatgan barcha noyob foydalanuvchilarni qaytaradi.
-    """
+async def get_top_users(
+    days: int,
+    chat_id: int | None = None,
+    channel_id: int | None = None,
+    limit: int = 5,
+) -> list[dict]:
+    """Oxirgi `days` kun ichidagi eng faol foydalanuvchilarni qaytaradi."""
     since = datetime.now(timezone.utc) - timedelta(days=days)
     since_str = since.strftime("%Y-%m-%d %H:%M:%S")
 
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            """
-            SELECT DISTINCT user_id, username, first_name
-            FROM activity
-            WHERE created_at >= ? AND chat_id = ?
-            """,
-            (since_str, chat_id),
-        )
-        rows = await cursor.fetchall()
+    where_clauses = ["created_at >= ?"]
+    params: list = [since_str]
 
-    users = [
-        {
-            "user_id": row["user_id"],
-            "username": row["username"],
-            "first_name": row["first_name"],
-        }
-        for row in rows
-    ]
-    logger.info("Oxirgi %d kunda %d ta faol foydalanuvchi topildi (chat=%s).", days, len(users), chat_id)
-    return users
+    if chat_id is not None and channel_id is not None:
+        where_clauses.append("(chat_id = ? OR chat_id = ?)")
+        params.extend([chat_id, channel_id])
+    elif chat_id is not None:
+        where_clauses.append("chat_id = ?")
+        params.append(chat_id)
 
-
-async def get_top_users(days: int, chat_id: int = 0, limit: int = 5) -> list[dict]:
+    where_sql = " AND ".join(where_clauses)
+    query = f"""
+        SELECT
+            user_id,
+            username,
+            first_name,
+            COUNT(*) AS total
+        FROM activity
+        WHERE {where_sql}
+        GROUP BY user_id
+        ORDER BY total DESC
+        LIMIT ?
     """
-    Oxirgi `days` kun ichidagi berilgan chatda eng faol foydalanuvchilarni qaytaradi.
-    """
-    since = datetime.now(timezone.utc) - timedelta(days=days)
-    since_str = since.strftime("%Y-%m-%d %H:%M:%S")
+    params.append(limit)
 
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            """
-            SELECT user_id, username, first_name, COUNT(*) as total
-            FROM activity
-            WHERE created_at >= ? AND chat_id = ?
-            GROUP BY user_id
-            ORDER BY total DESC
-            LIMIT ?
-            """,
-            (since_str, chat_id, limit),
-        )
+        cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
 
     return [
@@ -301,14 +377,18 @@ async def get_top_users(days: int, chat_id: int = 0, limit: int = 5) -> list[dic
 
 
 # ─────────────────────────────────────────────
-# 777 O'YIN — g'oliblar
+# 777 O'YINI (GAME WINNERS)
 # ─────────────────────────────────────────────
 
 async def check_777_winner_exists(chat_id: int, reply_to_message_id: int) -> bool:
-    """Shu post ostida allaqachon 777 g'olib bormi tekshiradi."""
+    """Shu post ostidagi kamentlarda 777 g'olibi allaqachon bormi tekshiradi."""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT 1 FROM game_winners WHERE chat_id = ? AND reply_to_message_id = ? LIMIT 1",
+            """
+            SELECT 1 FROM game_winners
+            WHERE chat_id = ? AND reply_to_message_id = ?
+            LIMIT 1
+            """,
             (chat_id, reply_to_message_id),
         )
         row = await cursor.fetchone()
@@ -320,63 +400,48 @@ async def save_777_winner(
     reply_to_message_id: int,
     winner_user_id: int,
     winner_first_name: str,
-) -> bool:
-    """
-    777 g'olibini bazaga yozadi.
-    Agar shu postda allaqachon g'olib bo'lsa False qaytaradi.
-    """
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                """
-                INSERT INTO game_winners (chat_id, reply_to_message_id, winner_user_id, winner_first_name)
-                VALUES (?, ?, ?, ?)
-                """,
-                (chat_id, reply_to_message_id, winner_user_id, winner_first_name),
-            )
-            await db.commit()
-        logger.info("777 g'olib yozildi: user=%s, chat=%s, msg=%s", winner_user_id, chat_id, reply_to_message_id)
-        return True
-    except aiosqlite.IntegrityError:
-        # UNIQUE constraint — bu postda allaqachon g'olib bor
-        logger.info("777 g'olib allaqachon bor: chat=%s, msg=%s", chat_id, reply_to_message_id)
-        return False
+) -> None:
+    """777 o'yini g'olibini bazaga yozadi."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT OR IGNORE INTO game_winners
+            (chat_id, reply_to_message_id, winner_user_id, winner_first_name)
+            VALUES (?, ?, ?, ?)
+            """,
+            (chat_id, reply_to_message_id, winner_user_id, winner_first_name),
+        )
+        await db.commit()
+    logger.info("777 g'olib yozildi: chat_id=%s, msg_id=%s, winner=%s", chat_id, reply_to_message_id, winner_user_id)
 
 
 # ─────────────────────────────────────────────
-# MAJBURIY OBUNA (MANDATORY CHANNELS)
+# MAJBURIY OBUNA VA SOZLAMALAR
 # ─────────────────────────────────────────────
 
 async def add_mandatory_channel(
-    channel_id: str | int,
-    channel_title: str | None = None,
+    channel_id: str,
+    channel_title: str,
     channel_username: str | None = None,
-) -> bool:
-    """Majburiy kanalni bazaga qo'shadi."""
-    channel_id_str = str(channel_id).strip()
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                """
-                INSERT INTO mandatory_channels (channel_id, channel_title, channel_username)
-                VALUES (?, ?, ?)
-                ON CONFLICT(channel_id) DO UPDATE SET
-                    channel_title = excluded.channel_title,
-                    channel_username = excluded.channel_username
-                """,
-                (channel_id_str, channel_title, channel_username),
-            )
-            await db.commit()
-        logger.info("Majburiy kanal qo'shildi: %s (%s)", channel_id_str, channel_title)
-        return True
-    except Exception as e:
-        logger.error("Majburiy kanal qo'shishda xatolik: %s", e)
-        return False
+) -> None:
+    """Majburiy a'zo bo'linadigan kanal qo'shadi."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO mandatory_channels (channel_id, channel_title, channel_username)
+            VALUES (?, ?, ?)
+            ON CONFLICT(channel_id) DO UPDATE SET
+                channel_title = excluded.channel_title,
+                channel_username = excluded.channel_username
+            """,
+            (channel_id, channel_title, channel_username),
+        )
+        await db.commit()
+    logger.info("Majburiy kanal qo'shildi: %s (%s)", channel_title, channel_id)
 
 
-async def remove_mandatory_channel(channel_id: str | int) -> bool:
+async def remove_mandatory_channel(channel_id_str: str) -> bool:
     """Majburiy kanalni bazadan o'chiradi."""
-    channel_id_str = str(channel_id).strip()
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "DELETE FROM mandatory_channels WHERE channel_id = ?",
@@ -436,18 +501,516 @@ async def set_mandatory_sub_enabled(enabled: bool) -> None:
     logger.info("Majburiy obuna holati o'zgartirildi: %s", enabled)
 
 
-async def get_admin_stats() -> dict:
-    """Admin panel uchun umumiy statistika."""
+async def get_bot_setting(key: str, default: str = "") -> str:
+    """Bot sozlamasini oladi."""
     async with aiosqlite.connect(DB_PATH) as db:
-        # Jami faol foydalanuvchilar
-        cursor = await db.execute("SELECT COUNT(DISTINCT user_id) FROM activity")
-        total_users = (await cursor.fetchone())[0]
+        cursor = await db.execute("SELECT value FROM bot_settings WHERE key = ? LIMIT 1", (key,))
+        row = await cursor.fetchone()
+    return row[0] if row else default
 
-        # Jami faolliklar
+
+async def set_bot_setting(key: str, value: str) -> None:
+    """Bot sozlamasini saqlaydi."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO bot_settings (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
+        await db.commit()
+
+
+# ─────────────────────────────────────────────
+# SMART VIRAL CONTEST — FOYDALANUVCHILAR VA REFERAL
+# ─────────────────────────────────────────────
+
+async def get_or_create_user(
+    user_id: int,
+    username: str | None,
+    first_name: str,
+    referred_by: int = 0,
+) -> tuple[dict, bool]:
+    """
+    Foydalanuvchini bazadan oladi yoki yangisini yaratadi.
+    Qaytaradi: (user_dict, is_new)
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM bot_users WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+
+        if row:
+            # Mavjud foydalanuvchi ma'lumotlarini yangilash
+            await db.execute(
+                """
+                UPDATE bot_users SET
+                    username = ?,
+                    first_name = ?,
+                    last_active = datetime('now')
+                WHERE user_id = ?
+                """,
+                (username, first_name, user_id),
+            )
+            await db.commit()
+            return dict(row), False
+
+        # Yangi foydalanuvchi yaratish
+        await db.execute(
+            """
+            INSERT INTO bot_users (user_id, username, first_name, referred_by, points, referral_count, bonus_points, vip_status)
+            VALUES (?, ?, ?, ?, 0, 0, 0, 0)
+            """,
+            (user_id, username, first_name, referred_by if referred_by != user_id else 0),
+        )
+        await db.commit()
+
+        cursor = await db.execute("SELECT * FROM bot_users WHERE user_id = ?", (user_id,))
+        new_row = await cursor.fetchone()
+        return dict(new_row), True
+
+
+async def process_referral_reward(
+    referrer_id: int,
+    new_user_id: int,
+    new_user_name: str | None,
+    new_user_first_name: str,
+) -> tuple[bool, int, dict | None]:
+    """
+    Yangi do'st kanalga muvaffaqiyatli obuna bo'lganda taklif qilganga +1 ball va bonuslarni beradi.
+    Qaytaradi: (awarded, total_points, milestone_dict or None)
+    """
+    if referrer_id == new_user_id or referrer_id <= 0:
+        return False, 0, None
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Allaqachon bu referal uchun mukofot berilganmi tekshirish
+        cursor = await db.execute(
+            "SELECT id, status FROM referrals WHERE referred_id = ?",
+            (new_user_id,),
+        )
+        existing_ref = await cursor.fetchone()
+
+        if existing_ref:
+            # Allaqachon mavjud
+            return False, 0, None
+
+        # Referallarga yozish
+        await db.execute(
+            """
+            INSERT INTO referrals (referrer_id, referred_id, status)
+            VALUES (?, ?, 'active')
+            """,
+            (referrer_id, new_user_id),
+        )
+
+        # Referrer profilini yangilash (+1 ball, +1 referral_count)
+        await db.execute(
+            """
+            UPDATE bot_users SET
+                points = points + 1,
+                referral_count = referral_count + 1
+            WHERE user_id = ?
+            """,
+            (referrer_id,),
+        )
+
+        # Yangilangan holatni olish
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM bot_users WHERE user_id = ?", (referrer_id,))
+        referrer = await cursor.fetchone()
+        if not referrer:
+            await db.commit()
+            return True, 1, None
+
+        ref_dict = dict(referrer)
+        current_refs = ref_dict["referral_count"]
+        milestone = None
+
+        # Pog'onali bonuslar (Milestone checks)
+        # 3 ta do'st: Random chipta statusi
+        if current_refs == 3:
+            milestone = {
+                "level": 3,
+                "bonus": 0,
+                "title": "🎟 Omadli Chipta (Random sovringa yo'llanma) ochildi!",
+            }
+        # 10 ta do'st: +5 bonus ball
+        elif current_refs == 10:
+            await db.execute(
+                "UPDATE bot_users SET points = points + 5, bonus_points = bonus_points + 5 WHERE user_id = ?",
+                (referrer_id,),
+            )
+            milestone = {
+                "level": 10,
+                "bonus": 5,
+                "title": "🎉 10 ta do'st bonusi: +5 qo'shimcha ball berildi!",
+            }
+        # 25 ta do'st: VIP status va +15 bonus ball
+        elif current_refs == 25:
+            await db.execute(
+                "UPDATE bot_users SET points = points + 15, bonus_points = bonus_points + 15, vip_status = 1 WHERE user_id = ?",
+                (referrer_id,),
+            )
+            milestone = {
+                "level": 25,
+                "bonus": 15,
+                "title": "👑 VIP STATUS va +15 qo'shimcha ball berildi!",
+            }
+
+        await db.commit()
+
+        # So'nggi umumiy ballni olish
+        cursor = await db.execute("SELECT points FROM bot_users WHERE user_id = ?", (referrer_id,))
+        final_row = await cursor.fetchone()
+        final_points = final_row[0] if final_row else ref_dict["points"]
+
+        return True, final_points, milestone
+
+
+async def process_referral_drop(leaving_user_id: int) -> tuple[int | None, str | None, int | None]:
+    """
+    Foydalanuvchi kanaldan chiqib ketganda (Anti-Drop):
+    Taklif qiluvchidan -1 ball olinadi va ogohlantirish uchun ma'lumot qaytariladi.
+    Qaytaradi: (referrer_id, referred_first_name, remaining_points)
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        # Referal holatini topish
+        cursor = await db.execute(
+            "SELECT id, referrer_id, status FROM referrals WHERE referred_id = ? AND status = 'active' LIMIT 1",
+            (leaving_user_id,),
+        )
+        ref_row = await cursor.fetchone()
+        if not ref_row:
+            return None, None, None
+
+        referrer_id = ref_row["referrer_id"]
+
+        # Referal statusini 'dropped' ga o'tkazamiz
+        await db.execute(
+            "UPDATE referrals SET status = 'dropped', dropped_at = datetime('now') WHERE id = ?",
+            (ref_row["id"],),
+        )
+
+        # Referrer balini -1 va referral_count ni -1 qilamiz (0 dan pastga tushmaydi)
+        await db.execute(
+            """
+            UPDATE bot_users SET
+                points = MAX(0, points - 1),
+                referral_count = MAX(0, referral_count - 1)
+            WHERE user_id = ?
+            """,
+            (referrer_id,),
+        )
+
+        # Chiqqan odam ismini olish
+        cursor = await db.execute("SELECT first_name, username FROM bot_users WHERE user_id = ?", (leaving_user_id,))
+        user_row = await cursor.fetchone()
+        user_name = user_row["first_name"] if user_row else "Foydalanuvchi"
+
+        # Referrer qolgan balini olish
+        cursor = await db.execute("SELECT points FROM bot_users WHERE user_id = ?", (referrer_id,))
+        ref_user = await cursor.fetchone()
+        remaining_points = ref_user["points"] if ref_user else 0
+
+        await db.commit()
+        return referrer_id, user_name, remaining_points
+
+
+async def get_user_profile(user_id: int) -> dict | None:
+    """Foydalanuvchining to'liq profilini qaytaradi."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM bot_users WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+
+async def get_top_referrers(limit: int = 10) -> list[dict]:
+    """Eng ko'p referal chaqirgan (va eng ko'p ballga ega) top ishtirokchilar."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT user_id, username, first_name, points, referral_count, vip_status
+            FROM bot_users
+            WHERE referral_count > 0
+            ORDER BY referral_count DESC, points DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+# ─────────────────────────────────────────────
+# KUNLIK POST VA PROMOKODLAR
+# ─────────────────────────────────────────────
+
+async def claim_daily_post_reward(user_id: int) -> tuple[bool, str]:
+    """
+    Foydalanuvchi bugungi postni ko'rgani uchun +1 ball oladi (kuniga faqat 1 marta).
+    Qaytaradi: (success, message)
+    """
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            await db.execute(
+                "INSERT INTO daily_post_rewards (user_id, reward_date) VALUES (?, ?)",
+                (user_id, today_str),
+            )
+            await db.execute(
+                "UPDATE bot_users SET points = points + 1, bonus_points = bonus_points + 1 WHERE user_id = ?",
+                (user_id,),
+            )
+            await db.commit()
+            return True, "🎉 Bugungi postni ko'rganingiz uchun sizga +1 ball berildi!"
+        except Exception:
+            return False, "⚠️ Siz bugungi post uchun ajratilgan ballni allaqachon olgansiz! Ertaga yana urinib ko'ring."
+
+
+async def create_promo_code(code: str, reward_points: int = 2, max_uses: int = 50) -> bool:
+    """Yangi yashirin promokod yaratish."""
+    clean_code = code.strip().upper()
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            await db.execute(
+                """
+                INSERT INTO promo_codes (code, reward_points, max_uses, used_count, is_active)
+                VALUES (?, ?, ?, 0, 1)
+                ON CONFLICT(code) DO UPDATE SET
+                    reward_points = excluded.reward_points,
+                    max_uses = excluded.max_uses,
+                    is_active = 1
+                """,
+                (clean_code, reward_points, max_uses),
+            )
+            await db.commit()
+            return True
+        except Exception as e:
+            logger.error("Promokod yaratishda xato: %s", e)
+            return False
+
+
+async def claim_promo_code(user_id: int, code_str: str) -> tuple[bool, str, int]:
+    """
+    Foydalanuvchi promokodni kiritganda tekshirish va ball berish.
+    Qaytaradi: (success, message, reward_points)
+    """
+    clean_code = code_str.strip().upper()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM promo_codes WHERE code = ? AND is_active = 1", (clean_code,))
+        promo = await cursor.fetchone()
+
+        if not promo:
+            return False, "❌ Bunday promokod mavjud emas yoki muddati tugagan.", 0
+
+        promo_dict = dict(promo)
+        if promo_dict["used_count"] >= promo_dict["max_uses"]:
+            return False, f"⚠️ Ushbu promokoddan foydalanish soni ({promo_dict['max_uses']} ta) allaqachon tugagan!", 0
+
+        # Foydalanuvchi avval ishlatganmi?
+        cursor = await db.execute(
+            "SELECT 1 FROM promo_claims WHERE promo_id = ? AND user_id = ?",
+            (promo_dict["id"], user_id),
+        )
+        if await cursor.fetchone():
+            return False, "⚠️ Siz ushbu promokoddan allaqachon foydalangansiz!", 0
+
+        # Ball berish va qayd etish
+        pts = promo_dict["reward_points"]
+        await db.execute("INSERT INTO promo_claims (promo_id, user_id) VALUES (?, ?)", (promo_dict["id"], user_id))
+        await db.execute("UPDATE promo_codes SET used_count = used_count + 1 WHERE id = ?", (promo_dict["id"],))
+        await db.execute(
+            "UPDATE bot_users SET points = points + ?, bonus_points = bonus_points + ? WHERE user_id = ?",
+            (pts, pts, user_id),
+        )
+        await db.commit()
+        return True, f"🎉 Tabriklaymiz! Promokod faollashtirildi: sizga +{pts} ball qo'shildi!", pts
+
+
+# ─────────────────────────────────────────────
+# DINAMIK KONKURSLAR VA ISHTIROKCHILAR
+# ─────────────────────────────────────────────
+
+async def create_contest(
+    title: str,
+    contest_type: str,
+    min_referrals: int,
+    prize_description: str,
+) -> int:
+    """Yangi konkurs yaratadi va ID sini qaytaradi."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO contests (title, contest_type, min_referrals, prize_description, is_active)
+            VALUES (?, ?, ?, ?, 1)
+            """,
+            (title, contest_type, min_referrals, prize_description),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_active_contests() -> list[dict]:
+    """Hozirgi barcha faol konkurslar ro'yxatini qaytaradi."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM contests WHERE is_active = 1 ORDER BY id DESC"
+        )
+        rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def get_contest(contest_id: int) -> dict | None:
+    """Aynan bitta konkurs ma'lumotlarini oladi."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM contests WHERE id = ?", (contest_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+
+async def register_user_for_contest(contest_id: int, user_id: int) -> tuple[bool, str, int | None]:
+    """
+    Foydalanuvchini konkursga ro'yxatdan o'tkazadi.
+    1. Konkurs faolligi tekshiriladi.
+    2. Foydalanuvchining faol referallari soni yetarliligi (min_referrals) tekshiriladi.
+    3. Allaqachon qatnashgan bo'lsa chiptasi ko'rsatiladi.
+    4. Muvaffaqiyatli bo'lsa yangi unikal chipta raqami beriladi.
+    """
+    contest = await get_contest(contest_id)
+    if not contest or not contest["is_active"]:
+        return False, "⚠️ Ushbu konkurs yakunlangan yoki mavjud emas.", None
+
+    user = await get_user_profile(user_id)
+    user_ref_count = user["referral_count"] if user else 0
+    min_refs = contest["min_referrals"]
+
+    # Referallar soni yetarlimi?
+    if user_ref_count < min_refs:
+        needed = min_refs - user_ref_count
+        return (
+            False,
+            f"⚠️ <b>Ushbu konkursda qatnashish uchun kamida {min_refs} ta do'stingizni taklif qilgan bo'lishingiz kerak!</b>\n\n"
+            f"📊 Sizning hozirgi referallaringiz: <b>{user_ref_count} ta</b>\n"
+            f"🎯 Qatnashish uchun yana <b>{needed} ta</b> do'st taklif qilishingiz kerak.\n\n"
+            f"Pastdagi «🚀 Do'stlarga ulashish» tugmasi orqali do'stlaringizni taklif qiling!",
+            None,
+        )
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        # Allaqachon qatnashganmi?
+        cursor = await db.execute(
+            "SELECT ticket_number FROM contest_participants WHERE contest_id = ? AND user_id = ?",
+            (contest_id, user_id),
+        )
+        existing = await cursor.fetchone()
+        if existing:
+            return True, f"✅ Siz ushbu konkursda allaqachon ro'yxatdan o'tgansiz!\n🎟 Sizning chiptangiz: <b>#{existing['ticket_number']}</b>", existing["ticket_number"]
+
+        # Yangi chipta raqami
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM contest_participants WHERE contest_id = ?",
+            (contest_id,),
+        )
+        count = (await cursor.fetchone())[0]
+        ticket_number = count + 1
+
+        await db.execute(
+            """
+            INSERT INTO contest_participants (contest_id, user_id, ticket_number)
+            VALUES (?, ?, ?)
+            """,
+            (contest_id, user_id, ticket_number),
+        )
+        await db.commit()
+
+        return (
+            True,
+            f"🎉 <b>Tabriklaymiz! Siz konkursda muvaffaqiyatli ro'yxatdan o'tdingiz!</b>\n\n"
+            f"🏆 Konkurs: <b>{contest['title']}</b>\n"
+            f"🎟 Sizning omadli chipta raqamingiz: <b>#{ticket_number}</b>\n\n"
+            f"Omad tilaymiz! G'oliblar konkurs yakunida bot orqali e'lon qilinadi.",
+            ticket_number,
+        )
+
+
+async def get_contest_participants(contest_id: int) -> list[dict]:
+    """Konkursda qatnashayotgan barcha foydalanuvchilar va ularning ballarini oladi."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT
+                p.ticket_number,
+                p.joined_at,
+                u.user_id,
+                u.username,
+                u.first_name,
+                u.points,
+                u.referral_count
+            FROM contest_participants p
+            JOIN bot_users u ON p.user_id = u.user_id
+            WHERE p.contest_id = ?
+            ORDER BY p.ticket_number ASC
+            """,
+            (contest_id,),
+        )
+        rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def end_contest(contest_id: int) -> bool:
+    """Konkursni yakunlangan deb belgilaydi."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE contests SET is_active = 0, ended_at = datetime('now') WHERE id = ?",
+            (contest_id,),
+        )
+        await db.commit()
+    return True
+
+
+async def get_all_bot_user_ids() -> list[int]:
+    """Barcha bot foydalanuvchilarining ID lari (broadcast uchun)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT user_id FROM bot_users")
+        rows = await cursor.fetchall()
+    return [r[0] for r in rows]
+
+
+# ─────────────────────────────────────────────
+# ADMIN STATISTIKASI
+# ─────────────────────────────────────────────
+
+async def get_admin_stats() -> dict:
+    """Admin panel uchun to'liq statistika."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Jami bot foydalanuvchilari
+        cursor = await db.execute("SELECT COUNT(*) FROM bot_users")
+        total_bot_users = (await cursor.fetchone())[0]
+
+        # Jami faol referallar
+        cursor = await db.execute("SELECT COUNT(*) FROM referrals WHERE status = 'active'")
+        total_active_referrals = (await cursor.fetchone())[0]
+
+        # Jami faolliklar (reaksiya, kament)
         cursor = await db.execute("SELECT COUNT(*) FROM activity")
         total_activities = (await cursor.fetchone())[0]
 
-        # Ulangan chatlar
+        # Ulangan kanallar va guruhlar
         cursor = await db.execute("SELECT COUNT(*) FROM linked_chats WHERE chat_type = 'channel'")
         total_channels = (await cursor.fetchone())[0]
 
@@ -458,11 +1021,16 @@ async def get_admin_stats() -> dict:
         cursor = await db.execute("SELECT COUNT(*) FROM mandatory_channels")
         total_mandatory = (await cursor.fetchone())[0]
 
+        # Faol konkurslar soni
+        cursor = await db.execute("SELECT COUNT(*) FROM contests WHERE is_active = 1")
+        active_contests = (await cursor.fetchone())[0]
+
     return {
-        "total_users": total_users,
+        "total_users": total_bot_users,
+        "total_active_referrals": total_active_referrals,
         "total_activities": total_activities,
         "total_channels": total_channels,
         "total_groups": total_groups,
         "total_mandatory": total_mandatory,
+        "active_contests": active_contests,
     }
-
