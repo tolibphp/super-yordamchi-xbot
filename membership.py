@@ -52,3 +52,42 @@ async def check_membership(
 
     logger.info("User %s — eligible (barcha chatlarga a'zo).", user_id)
     return True
+
+
+async def check_all_mandatory_subs(
+    bot: Bot,
+    user_id: int,
+) -> tuple[bool, list[dict]]:
+    """
+    Foydalanuvchining barcha majburiy kanallarga a'zo ekanligini tekshiradi.
+    :return: (is_subscribed: bool, not_subscribed_channels: list[dict])
+    """
+    from database import get_mandatory_channels, is_mandatory_sub_enabled
+
+    if not await is_mandatory_sub_enabled():
+        return True, []
+
+    channels = await get_mandatory_channels()
+    if not channels:
+        return True, []
+
+    missing: list[dict] = []
+    for ch in channels:
+        raw_cid = ch["channel_id"]
+        # Agar -100 bilan boshlangan raqam bo'lsa int ga o'giramiz
+        try:
+            cid: int | str = int(raw_cid)
+        except ValueError:
+            cid = raw_cid if raw_cid.startswith("@") else f"@{raw_cid}"
+
+        try:
+            member = await bot.get_chat_member(chat_id=cid, user_id=user_id)
+            if member.status in _NOT_MEMBER_STATUSES:
+                missing.append(ch)
+        except Exception as e:
+            logger.warning("Majburiy kanal tekshirishda xato (channel=%s, user=%s): %s", cid, user_id, e)
+            missing.append(ch)
+
+    is_all_subbed = len(missing) == 0
+    return is_all_subbed, missing
+

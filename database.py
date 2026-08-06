@@ -59,6 +59,31 @@ async def init_db() -> None:
             )
         """)
 
+        # Majburiy kanallar jadvali
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS mandatory_channels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id TEXT NOT NULL UNIQUE,
+                channel_title TEXT,
+                channel_username TEXT,
+                created_at DATETIME DEFAULT (datetime('now'))
+            )
+        """)
+
+        # Bot sozlamalari jadvali
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS bot_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+
+        # Standart sozlama: majburiy obuna yoniq
+        await db.execute("""
+            INSERT OR IGNORE INTO bot_settings (key, value)
+            VALUES ('mandatory_sub_enabled', '1')
+        """)
+
         # Indekslar
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_activity_user_id ON activity(user_id)
@@ -316,3 +341,128 @@ async def save_777_winner(
         # UNIQUE constraint — bu postda allaqachon g'olib bor
         logger.info("777 g'olib allaqachon bor: chat=%s, msg=%s", chat_id, reply_to_message_id)
         return False
+
+
+# ─────────────────────────────────────────────
+# MAJBURIY OBUNA (MANDATORY CHANNELS)
+# ─────────────────────────────────────────────
+
+async def add_mandatory_channel(
+    channel_id: str | int,
+    channel_title: str | None = None,
+    channel_username: str | None = None,
+) -> bool:
+    """Majburiy kanalni bazaga qo'shadi."""
+    channel_id_str = str(channel_id).strip()
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                """
+                INSERT INTO mandatory_channels (channel_id, channel_title, channel_username)
+                VALUES (?, ?, ?)
+                ON CONFLICT(channel_id) DO UPDATE SET
+                    channel_title = excluded.channel_title,
+                    channel_username = excluded.channel_username
+                """,
+                (channel_id_str, channel_title, channel_username),
+            )
+            await db.commit()
+        logger.info("Majburiy kanal qo'shildi: %s (%s)", channel_id_str, channel_title)
+        return True
+    except Exception as e:
+        logger.error("Majburiy kanal qo'shishda xatolik: %s", e)
+        return False
+
+
+async def remove_mandatory_channel(channel_id: str | int) -> bool:
+    """Majburiy kanalni bazadan o'chiradi."""
+    channel_id_str = str(channel_id).strip()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "DELETE FROM mandatory_channels WHERE channel_id = ?",
+            (channel_id_str,),
+        )
+        await db.commit()
+        deleted = cursor.rowcount > 0
+    logger.info("Majburiy kanal o'chirildi (%s): %s", channel_id_str, deleted)
+    return deleted
+
+
+async def get_mandatory_channels() -> list[dict]:
+    """Barcha majburiy kanallar ro'yxatini qaytaradi."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, channel_id, channel_title, channel_username, created_at FROM mandatory_channels ORDER BY id ASC"
+        )
+        rows = await cursor.fetchall()
+    return [
+        {
+            "id": row["id"],
+            "channel_id": row["channel_id"],
+            "channel_title": row["channel_title"] or "Noma'lum kanal",
+            "channel_username": row["channel_username"],
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+async def is_mandatory_sub_enabled() -> bool:
+    """Majburiy obuna yoqilganligini tekshiradi."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT value FROM bot_settings WHERE key = 'mandatory_sub_enabled' LIMIT 1"
+        )
+        row = await cursor.fetchone()
+    if row:
+        return row[0] == "1"
+    return True
+
+
+async def set_mandatory_sub_enabled(enabled: bool) -> None:
+    """Majburiy obunani yoqadi yoki o'chiradi."""
+    val = "1" if enabled else "0"
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO bot_settings (key, value)
+            VALUES ('mandatory_sub_enabled', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (val,),
+        )
+        await db.commit()
+    logger.info("Majburiy obuna holati o'zgartirildi: %s", enabled)
+
+
+async def get_admin_stats() -> dict:
+    """Admin panel uchun umumiy statistika."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Jami faol foydalanuvchilar
+        cursor = await db.execute("SELECT COUNT(DISTINCT user_id) FROM activity")
+        total_users = (await cursor.fetchone())[0]
+
+        # Jami faolliklar
+        cursor = await db.execute("SELECT COUNT(*) FROM activity")
+        total_activities = (await cursor.fetchone())[0]
+
+        # Ulangan chatlar
+        cursor = await db.execute("SELECT COUNT(*) FROM linked_chats WHERE chat_type = 'channel'")
+        total_channels = (await cursor.fetchone())[0]
+
+        cursor = await db.execute("SELECT COUNT(*) FROM linked_chats WHERE chat_type = 'group'")
+        total_groups = (await cursor.fetchone())[0]
+
+        # Majburiy kanallar soni
+        cursor = await db.execute("SELECT COUNT(*) FROM mandatory_channels")
+        total_mandatory = (await cursor.fetchone())[0]
+
+    return {
+        "total_users": total_users,
+        "total_activities": total_activities,
+        "total_channels": total_channels,
+        "total_groups": total_groups,
+        "total_mandatory": total_mandatory,
+    }
+
