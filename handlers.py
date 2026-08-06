@@ -1160,7 +1160,8 @@ async def _render_draw_preview(
     """G'oliblarni hisoblash, xabarni chiqarish va qayta aniqlash (re-roll) imkonini beruvchi yordamchi funksiya."""
     res = await draw_contest_winners(bot, contest_id, winner_count=winner_count, save_to_db=True)
     if not res["success"]:
-        err_msg = f"❌ Xato: {res.get('error', 'G\'oliblarni aniqlab bo\'lmadi')}"
+        raw_err = res.get("error") or "G'oliblarni aniqlab bo'lmadi"
+        err_msg = f"❌ Xato: {raw_err}"
         if isinstance(target, CallbackQuery):
             await target.answer(err_msg, show_alert=True)
         else:
