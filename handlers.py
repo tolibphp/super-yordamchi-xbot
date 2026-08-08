@@ -55,6 +55,13 @@ from database import (
     claim_daily_post_reward,
     create_promo_code,
     claim_promo_code,
+    find_user_by_id_or_username,
+    manual_add_user_referrals,
+    manual_add_user_points,
+    spin_lucky_wheel,
+    get_user_wheel_status,
+    get_weekly_top_referrers,
+    record_group_chat_activity,
     create_contest,
     get_active_contests,
     get_contest,
@@ -99,11 +106,15 @@ class AdminStates(StatesGroup):
     contest_min_refs = State()
     contest_prize = State()
     promo_code = State()
+    promo_type = State()
     promo_points = State()
     promo_max_uses = State()
     daily_post_url = State()
     broadcast_text = State()
     draw_custom_count = State()
+    manual_action_type = State()
+    manual_user_target = State()
+    manual_reward_amount = State()
 
 
 class UserStates(StatesGroup):
@@ -138,9 +149,10 @@ def _build_user_dashboard(user: dict, bot_user_name: str) -> tuple[str, InlineKe
         f"👥 <b>Faol referallaringiz:</b> <code>{refs}</code> ta do'st\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🔥 <b>Qanday qilib ball to'plash mumkin?</b>\n"
-        f"1️⃣ «🚀 Do'stlarga Ulashish» tugmasi orqali do'stlaringizni taklif qiling (+1 ball)\n"
-        f"2️⃣ Kanaldagi kunlik postlarni ko'ring (+1 ball)\n"
-        f"3️⃣ Yashirin promokodlarni kiriting (+2 ball)\n\n"
+        f"1️⃣ «🚀 Do'stlarga Ulashish» orqali do'stlaringizni taklif qiling (+1 ball)\n"
+        f"2️⃣ 🎡 Kunlik «Omad G'ildiragi»ni bepul aylantiring\n"
+        f"3️⃣ Guruhda faol gaplashing (+1 ball chat mining)\n"
+        f"4️⃣ Kanaldagi postlarni ko'ring va yashirin promokodlarni tering!\n\n"
         f"🎁 <b>Qimmatbaho konkurslarimizda qatnashing va Telegram Premium yuting!</b>"
     )
 
@@ -150,8 +162,12 @@ def _build_user_dashboard(user: dict, bot_user_name: str) -> tuple[str, InlineKe
             InlineKeyboardButton(text="🎁 Faol Konkurslar", callback_data="user:contests"),
         ],
         [
+            InlineKeyboardButton(text="🎡 Omad G'ildiragi", callback_data="user:wheel"),
             InlineKeyboardButton(text="👤 Profilim", callback_data="user:profile"),
+        ],
+        [
             InlineKeyboardButton(text="🏆 Reyting (Top)", callback_data="user:top"),
+            InlineKeyboardButton(text="🏁 Haftalik Top-5 (⭐️ Stars)", callback_data="user:weekly_top"),
         ],
         [
             InlineKeyboardButton(text="⚡ Bugungi post (+1 ball)", callback_data="user:daily_post"),
@@ -256,7 +272,7 @@ async def cmd_start(message: Message, bot: Bot, state: FSMContext) -> None:
 
     # 3. Agar yangi referal bo'lsa — taklif qiluvchiga mukofot berish va bildirishnoma yuborish
     if is_new and referrer_id > 0 and referrer_id != user_id:
-        awarded, total_pts, milestone = await process_referral_reward(
+        awarded, total_pts, milestone, tier2_info = await process_referral_reward(
             referrer_id=referrer_id,
             new_user_id=user_id,
             new_user_name=username,
@@ -277,6 +293,19 @@ async def cmd_start(message: Message, bot: Bot, state: FSMContext) -> None:
                 await bot.send_message(referrer_id, notif_text, parse_mode="HTML")
             except Exception as e:
                 logger.warning("Referrer %s ga xabar yuborib bo'lmadi: %s", referrer_id, e)
+
+            # 2-Pog'onali (Tier 2) bildirishnoma
+            if tier2_info:
+                g_id = tier2_info["grand_referrer_id"]
+                try:
+                    t2_text = (
+                        "🌟 <b>2-POG'ONALI PASSIV REFERAL BONUSI!</b>\n\n"
+                        "Siz taklif qilgan do'stingiz yangi a'zo taklif qildi. "
+                        "Sizga passiv <b>+1 bonus ball</b> taqdim etildi! 🚀"
+                    )
+                    await bot.send_message(g_id, t2_text, parse_mode="HTML")
+                except Exception as e:
+                    logger.warning("Grand referrer %s ga xabar yuborib bo'lmadi: %s", g_id, e)
 
     # 4. Agar foydalanuvchi natijalarni tekshirish uchun kirgan bo'lsa
     if results_contest_id > 0:
@@ -361,7 +390,7 @@ async def cb_user_verify_sub(query: CallbackQuery, bot: Bot, state: FSMContext) 
     user_dict, is_new = await get_or_create_user(user_id, username, first_name, referred_by=referrer_id)
 
     if is_new and referrer_id > 0 and referrer_id != user_id:
-        awarded, total_pts, milestone = await process_referral_reward(
+        awarded, total_pts, milestone, tier2_info = await process_referral_reward(
             referrer_id=referrer_id,
             new_user_id=user_id,
             new_user_name=username,
@@ -382,6 +411,18 @@ async def cb_user_verify_sub(query: CallbackQuery, bot: Bot, state: FSMContext) 
                 await bot.send_message(referrer_id, notif_text, parse_mode="HTML")
             except Exception:
                 pass
+
+            if tier2_info:
+                g_id = tier2_info["grand_referrer_id"]
+                try:
+                    t2_text = (
+                        "🌟 <b>2-POG'ONALI PASSIV REFERAL BONUSI!</b>\n\n"
+                        "Siz taklif qilgan do'stingiz yangi a'zo taklif qildi. "
+                        "Sizga passiv <b>+1 bonus ball</b> taqdim etildi! 🚀"
+                    )
+                    await bot.send_message(g_id, t2_text, parse_mode="HTML")
+                except Exception:
+                    pass
 
     if results_contest_id > 0:
         res_text, res_kb = await get_contest_results_view(results_contest_id)
@@ -797,7 +838,7 @@ async def cb_user_promo_prompt(query: CallbackQuery, state: FSMContext) -> None:
         "🔑 <b>YASHIRIN PROMOKOD KIRITISH</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
         "Kanaldagi postlarga yashirilgan maxsus promokodlarni (masalan: <code>#AI_PRO</code>) kiritib, "
-        "qo'shimcha ballarni qo'lga kiriting!\n\n"
+        "qo'shimcha ballar yoki <b>bepul referallarni</b> qo'lga kiriting!\n\n"
         "✍️ <b>Promokodni yuboring:</b>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -814,7 +855,7 @@ async def user_enter_promo_code(message: Message, state: FSMContext) -> None:
     code_text = message.text.strip() if message.text else ""
     user_id = message.from_user.id if message.from_user else 0
 
-    success, msg, pts = await claim_promo_code(user_id, code_text)
+    success, msg, pts, reward_type = await claim_promo_code(user_id, code_text)
     await state.clear()
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -825,12 +866,125 @@ async def user_enter_promo_code(message: Message, state: FSMContext) -> None:
     await message.reply(f"{msg}", parse_mode="HTML", reply_markup=kb)
 
 
+# ── OMAD G'ILDIRAGI (LUCKY WHEEL) ──
+
+@router.callback_query(F.data == "user:wheel")
+async def cb_user_wheel(query: CallbackQuery) -> None:
+    """Kunlik Omad G'ildiragi ekrani."""
+    user_id = query.from_user.id
+    can_spin = await get_user_wheel_status(user_id)
+
+    status_text = "🟢 <b>Bugungi bepul imkoniyat mavjud!</b>" if can_spin else "⏳ <b>Bugungi imkoniyatdan foydalangansiz! (Ertaga ochiladi)</b>"
+
+    text = (
+        "🎡 <b>KUNLIK OMAD G'ILDIRAGI</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Har kuni botga kirib omad g'ildiragini bepul aylantiring va quyidagi sovg'alarni yutib oling:\n\n"
+        "🎯 <b>+1 Ball</b>\n"
+        "🚀 <b>+2 Ball</b>\n"
+        "👥 <b>+1 Bepul Referal (Do'st)</b>\n"
+        "🌟 <b>+3 Ball</b>\n"
+        "🎟 <b>Omadli Chipta (+5 Ball)</b>\n\n"
+        f"📌 <b>Holat:</b> {status_text}\n"
+    )
+
+    buttons = []
+    if can_spin:
+        buttons.append([InlineKeyboardButton(text="🎡 G'ildirakni Aylantirish!", callback_data="user:spin_wheel")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")])
+
+    if query.message:
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await query.answer()
+
+
+@router.callback_query(F.data == "user:spin_wheel")
+async def cb_user_spin_wheel(query: CallbackQuery, bot: Bot) -> None:
+    """G'ildirakni aylantirish jarayoni va natijasi."""
+    user_id = query.from_user.id
+    success, msg, r_type, r_val = await spin_lucky_wheel(user_id)
+
+    if not success:
+        await query.answer(msg, show_alert=True)
+        return
+
+    # Animatsiya hissi berish
+    if query.message:
+        try:
+            await query.message.edit_text("🎡 <i>G'ildirak aylanmoqda... ⏳</i>", parse_mode="HTML")
+            await asyncio.sleep(1.2)
+        except Exception:
+            pass
+
+    text = (
+        "🎡 <b>OMAD G'ILDIRAGI NATIJASI!</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{msg}\n\n"
+        "💡 <i>Ertaga yana kiring va yangi bepul yutuqlarni qo'lga kiriting!</i>"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👤 Profilim", callback_data="user:profile")],
+        [InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")],
+    ])
+
+    if query.message:
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await query.answer()
+
+
+# ── HAFTALIK LIDERLAR REYTINGI ──
+
+@router.callback_query(F.data == "user:weekly_top")
+async def cb_user_weekly_top(query: CallbackQuery) -> None:
+    """Haftalik eng ko'p referal to'plagan Top-5 liderlar va Telegram Stars yutuqlari."""
+    leaders = await get_weekly_top_referrers(limit=5)
+    lines = [
+        "🏁 <b>HAFTALIK TOP-5 LIDERLAR (STARS YUTUQLARI)</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "<i>Oxirgi 7 kun ichida eng ko'p do'st taklif qilgan Top-5 ishtirokchi har hafta Telegram Stars bilan taqdirlanadi!</i>\n\n"
+        "🎁 <b>Haftalik Sovg'alar Jamg'armasi:</b>\n"
+        "🥇 <b>1-o'rin:</b> ⭐️ <b>2 ta Stars</b>\n"
+        "🥈 <b>2-o'rin:</b> ⭐️ <b>1 ta Stars</b>\n"
+        "🥉 <b>3-o'rin:</b> ⭐️ <b>1 ta Stars</b>\n"
+        "4️⃣ <b>4-o'rin:</b> ⭐️ <b>1 ta Stars</b>\n"
+        "5️⃣ <b>5-o'rin:</b> ⭐️ <b>1 ta Stars</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "📊 <b>Hozirgi yetakchilar holati:</b>\n\n",
+    ]
+
+    if not leaders:
+        lines.append("⚠️ Hozircha bu haftada faoliyat qayd etilmadi. Birinchi bo'lib do'stlaringizni taklif qiling va Stars yuting!\n")
+    else:
+        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+        stars_rewards = ["⭐️ 2 Stars", "⭐️ 1 Star", "⭐️ 1 Star", "⭐️ 1 Star", "⭐️ 1 Star"]
+        for i, u in enumerate(leaders, start=1):
+            medal = medals[i - 1]
+            prize = stars_rewards[i - 1]
+            name = html.escape(u.get("first_name", "Noma'lum"))
+            refs = u.get("weekly_refs", 0)
+            pts = u.get("points", 0)
+            vip = " 👑" if u.get("vip_status") == 1 else ""
+            lines.append(f"{medal} <b>{name}</b>{vip} — <b>{refs}</b> ta do'st (Sovg'a: <b>{prize}</b>)\n")
+
+    lines.append("\n💡 <i>Har hafta yakunida g'oliblarga Stars taqdim etiladi! Siz ham do'stlaringizni taklif qiling va yetakchiga aylaning!</i>")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Do'stlarni taklif qilish", callback_data="user:share")],
+        [InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")],
+    ])
+
+    if query.message:
+        await query.message.edit_text("".join(lines), parse_mode="HTML", reply_markup=kb)
+    await query.answer()
+
+
 @router.callback_query(F.data == "user:top")
 async def cb_user_top(query: CallbackQuery) -> None:
-    """Eng ko'p do'st taklif qilgan liderlar reytingi."""
+    """Eng ko'p do'st taklif qilgan liderlar reytingi (Umumiy)."""
     leaders = await get_top_referrers(limit=10)
     lines = [
-        "🏆 <b>ENG KO'P DO'ST TAKLIF QILGAN LIDERLAR</b>\n"
+        "🏆 <b>ENG KO'P DO'ST TAKLIF QILGAN LIDERLAR (UMUMIY)</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n",
     ]
 
@@ -952,17 +1106,18 @@ async def _build_admin_menu_text_and_kb() -> tuple[str, InlineKeyboardMarkup]:
         ],
         [
             InlineKeyboardButton(text="🔑 Promokod Yaratish", callback_data="admin:new_promo"),
-            InlineKeyboardButton(text="⚡ Kunlik Post Linki", callback_data="admin:set_daily_post"),
+            InlineKeyboardButton(text="👤 Referal / Ball Qo'shish", callback_data="admin:manual_reward_menu"),
         ],
         [
+            InlineKeyboardButton(text="⚡ Kunlik Post Linki", callback_data="admin:set_daily_post"),
             InlineKeyboardButton(text="📢 Barchaga Xabar (Broadcast)", callback_data="admin:broadcast"),
-            InlineKeyboardButton(text="📊 Bot Statistikasi", callback_data="admin:stats"),
         ],
         [
             InlineKeyboardButton(text="➕ Majburiy Kanal Qo'shish", callback_data="admin:add_channel"),
             InlineKeyboardButton(text="🗑 Kanal O'chirish", callback_data="admin:del_channel_list"),
         ],
         [
+            InlineKeyboardButton(text="📊 Bot Statistikasi", callback_data="admin:stats"),
             InlineKeyboardButton(text=f"{sub_icon} {sub_action_text}", callback_data="admin:toggle_sub"),
         ],
         [
@@ -1472,14 +1627,14 @@ async def cb_admin_publish_winners(query: CallbackQuery, bot: Bot) -> None:
     await query.answer(f"✅ G'oliblar e'loni {posted} ta kanalga chiqarildi!", show_alert=True)
 
 
-# ── PROMOKOD YARATISH ──
+# ── PROMOKOD YARATISH WIZARDI ──
 
 @router.callback_query(F.data == "admin:new_promo")
 async def cb_admin_new_promo_step1(query: CallbackQuery, state: FSMContext) -> None:
-    """Promokod yaratish: kod nomini so'rash."""
+    """Promokod yaratish: 1-qadam — Kod nomini so'rash."""
     await state.set_state(AdminStates.promo_code)
     text = (
-        "🔑 <b>YANGI PROMOKOD YARATISH (1/3)</b>\n"
+        "🔑 <b>YANGI PROMOKOD YARATISH (1/4)</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
         "✍️ <b>Promokod matnini kiriting:</b>\n"
         "(Masalan: <code>#AI_PRO</code> yoki <code>TOLIBJON_GIFT</code>)"
@@ -1494,16 +1649,47 @@ async def cb_admin_new_promo_step1(query: CallbackQuery, state: FSMContext) -> N
 
 @router.message(AdminStates.promo_code)
 async def admin_promo_code_step2(message: Message, state: FSMContext) -> None:
-    """Promokod ballini so'rash."""
+    """Promokod turini tanlash (Ball yoki Referal)."""
     code = message.text.strip().upper() if message.text else ""
     await state.update_data(promo_code=code)
-    await state.set_state(AdminStates.promo_points)
-    await message.reply(
+    await state.set_state(AdminStates.promo_type)
+
+    text = (
         f"✅ Promokod: <b>{code}</b>\n\n"
-        f"✍️ Ushbu kodni kiritgan foydalanuvchiga <b>necha ball</b> berilsin?\n"
-        f"(Masalan: <code>2</code> yoki <code>5</code>)",
-        parse_mode="HTML",
+        "🎁 <b>Promokod turini tanlang:</b>\n\n"
+        "⭐️ <b>Ball beruvchi:</b> Foydalanuvchiga to'g'ridan-to'g'ri ball qo'shadi.\n"
+        "👥 <b>Referal beruvchi:</b> Foydalanuvchining referallar sonini ko'paytiradi (konkurslarga kirish osonlashadi)."
     )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="⭐️ Ball beruvchi", callback_data="admin:p_type:points"),
+            InlineKeyboardButton(text="👥 Referal beruvchi", callback_data="admin:p_type:referrals"),
+        ],
+        [
+            InlineKeyboardButton(text="⬅️ Bekor qilish", callback_data="admin:menu"),
+        ],
+    ])
+    await message.reply(text, parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("admin:p_type:"))
+async def cb_admin_promo_type_selected(query: CallbackQuery, state: FSMContext) -> None:
+    """Promokod turi tanlandi, miqdorni so'rash."""
+    p_type = query.data.split(":")[2]
+    await state.update_data(promo_type=p_type)
+    await state.set_state(AdminStates.promo_points)
+
+    label = "nechta referal (do'st)" if p_type == "referrals" else "necha ball"
+    text = (
+        f"✍️ Ushbu promokodni faollashtirganga <b>{label}</b> berilsin?\n"
+        f"(Masalan: <code>2</code> yoki <code>5</code>)"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Bekor qilish", callback_data="admin:menu")],
+    ])
+    if query.message:
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await query.answer()
 
 
 @router.message(AdminStates.promo_points)
@@ -1513,8 +1699,13 @@ async def admin_promo_code_step3(message: Message, state: FSMContext) -> None:
     pts = int(pts_str) if pts_str.isdigit() else 2
     await state.update_data(promo_points=pts)
     await state.set_state(AdminStates.promo_max_uses)
+
+    data = await state.get_data()
+    p_type = data.get("promo_type", "points")
+    unit = "referal" if p_type == "referrals" else "ball"
+
     await message.reply(
-        f"✅ Ball: <b>+{pts} ball</b>\n\n"
+        f"✅ Mukofot: <b>+{pts} {unit}</b>\n\n"
         f"✍️ Ushbu promokoddan <b>maksimal nechta kishi</b> foydalana olsin?\n"
         f"(Masalan: <code>50</code> yoki <code>100</code>)",
         parse_mode="HTML",
@@ -1530,15 +1721,20 @@ async def admin_promo_code_finish(message: Message, state: FSMContext) -> None:
     await state.clear()
 
     code = data.get("promo_code", "BONUS")
+    p_type = data.get("promo_type", "points")
     pts = data.get("promo_points", 2)
 
-    await create_promo_code(code, pts, max_uses)
+    await create_promo_code(code=code, reward_type=p_type, reward_points=pts, max_uses=max_uses)
+
+    type_label = "👥 Referal qo'shuvchi" if p_type == "referrals" else "⭐️ Ball qo'shuvchi"
+    unit = "ta do'st (referal)" if p_type == "referrals" else "ball"
 
     text = (
         f"🎉 <b>YANGI PROMOKOD TAYYOR!</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🔑 <b>Kod:</b> <code>{code}</code>\n"
-        f"🎁 <b>Mukofot:</b> +{pts} ball\n"
+        f"🏷 <b>Turi:</b> {type_label}\n"
+        f"🎁 <b>Mukofot:</b> +{pts} {unit}\n"
         f"👥 <b>Foydalanishlar limiti:</b> {max_uses} ta odam\n\n"
         f"💡 <i>Ushbu promokodni kanaldagi postingizga yashirib qo'yishingiz mumkin!</i>"
     )
@@ -1546,6 +1742,226 @@ async def admin_promo_code_finish(message: Message, state: FSMContext) -> None:
         [InlineKeyboardButton(text="⬅️ Admin Menyu", callback_data="admin:menu")],
     ])
     await message.reply(text, parse_mode="HTML", reply_markup=kb)
+
+
+# ── ADMIN TO'G'RIDAN-TO'G'RI REFERAL / BALL QO'SHISH ──
+
+@router.message(Command("addref"))
+async def cmd_admin_addref(message: Message, bot: Bot) -> None:
+    """Tezkor komanda: /addref @username 5 yoki /addref 123456789 5"""
+    if not ADMIN_ID or not message.from_user or message.from_user.id != ADMIN_ID:
+        return
+
+    parts = message.text.split() if message.text else []
+    if len(parts) < 3:
+        await message.reply(
+            "✍️ <b>Foydalanish:</b> <code>/addref [user_id yoki @username] [soni]</code>\n"
+            "Masalan: <code>/addref @Tolibjon 5</code> yoki <code>/addref 123456789 10</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    target = parts[1]
+    amount_str = parts[2]
+    try:
+        amount = int(amount_str)
+    except ValueError:
+        await message.reply("❌ Miqdor butun son bo'lishi kerak (masalan: 5 yoki 10).")
+        return
+
+    success, msg, u_dict = await manual_add_user_referrals(target, amount)
+    if not success:
+        await message.reply(msg, parse_mode="HTML")
+        return
+
+    uid = u_dict["user_id"]
+    try:
+        sign = "+" if amount > 0 else ""
+        await bot.send_message(
+            uid,
+            f"🎁 <b>ADMIN BONUST!</b>\n\n"
+            f"Admin tomonidan sizning profilingizga <b>{sign}{amount} ta referal</b> va ball qo'shildi! 🚀\n"
+            f"📊 Sizning jami referallaringiz: <b>{u_dict['referral_count']}</b> ta\n"
+            f"⭐️ Sizning jami balingiz: <b>{u_dict['points']}</b> ball",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+    await message.reply(msg, parse_mode="HTML")
+
+
+@router.message(Command("addball"))
+async def cmd_admin_addball(message: Message, bot: Bot) -> None:
+    """Tezkor komanda: /addball @username 10 yoki /addball 123456789 10"""
+    if not ADMIN_ID or not message.from_user or message.from_user.id != ADMIN_ID:
+        return
+
+    parts = message.text.split() if message.text else []
+    if len(parts) < 3:
+        await message.reply(
+            "✍️ <b>Foydalanish:</b> <code>/addball [user_id yoki @username] [soni]</code>\n"
+            "Masalan: <code>/addball @Tolibjon 15</code> yoki <code>/addball 123456789 20</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    target = parts[1]
+    amount_str = parts[2]
+    try:
+        amount = int(amount_str)
+    except ValueError:
+        await message.reply("❌ Miqdor butun son bo'lishi kerak.")
+        return
+
+    success, msg, u_dict = await manual_add_user_points(target, amount)
+    if not success:
+        await message.reply(msg, parse_mode="HTML")
+        return
+
+    uid = u_dict["user_id"]
+    try:
+        sign = "+" if amount > 0 else ""
+        await bot.send_message(
+            uid,
+            f"🎁 <b>ADMIN BONUST!</b>\n\n"
+            f"Admin tomonidan sizning profilingizga <b>{sign}{amount} ball</b> taqdim etildi! 🌟\n"
+            f"⭐️ Sizning jami balingiz: <b>{u_dict['points']}</b> ball",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+    await message.reply(msg, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "admin:manual_reward_menu")
+async def cb_admin_manual_reward_menu(query: CallbackQuery, state: FSMContext) -> None:
+    """Admin panel orqali qo'lda referal yoki ball qo'shish menyusi."""
+    await state.clear()
+    text = (
+        "👤 <b>FOYDALANUVCHIGA REFERAL YOKI BALL QO'SHISH</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Qaysi amalni bajarmoqchisiz?\n\n"
+        "👥 <b>Referal qo'shish:</b> Foydalanuvchining referallar soni va balini oshiradi.\n"
+        "⭐️ <b>Ball qo'shish:</b> Foydalanuvchiga faqat ball qo'shadi.\n\n"
+        "💡 <i>Shuningdek, tezkor ravishda <code>/addref @username 5</code> yoki <code>/addball @username 10</code> buyruqlaridan ham foydalanishingiz mumkin.</i>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="👥 Referal qo'shish", callback_data="admin:man:referrals"),
+            InlineKeyboardButton(text="⭐️ Ball qo'shish", callback_data="admin:man:points"),
+        ],
+        [
+            InlineKeyboardButton(text="⬅️ Admin Menyu", callback_data="admin:menu"),
+        ],
+    ])
+    if query.message:
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("admin:man:"))
+async def cb_admin_manual_action_chosen(query: CallbackQuery, state: FSMContext) -> None:
+    """Amal turi tanlandi, foydalanuvchi ID yoki username so'rash."""
+    action = query.data.split(":")[2]
+    await state.update_data(manual_action_type=action)
+    await state.set_state(AdminStates.manual_user_target)
+
+    label = "Referal" if action == "referrals" else "Ball"
+    text = (
+        f"✍️ <b>{label} qo'shmoqchi bo'lgan foydalanuvchining ID yoki @username'ini yozing:</b>\n\n"
+        f"(Masalan: <code>@Tolibjon</code> yoki <code>123456789</code>)"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Bekor qilish", callback_data="admin:manual_reward_menu")],
+    ])
+    if query.message:
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await query.answer()
+
+
+@router.message(AdminStates.manual_user_target)
+async def admin_manual_user_target_entered(message: Message, state: FSMContext) -> None:
+    """Foydalanuvchi tekshiriladi va miqdor so'raladi."""
+    target = message.text.strip() if message.text else ""
+    user = await find_user_by_id_or_username(target)
+    if not user:
+        await message.reply(
+            f"❌ Foydalanuvchi topilmadi (<code>{target}</code>).\n"
+            f"Iltimos, to'g'ri ID yoki @username kiriting:",
+            parse_mode="HTML",
+        )
+        return
+
+    await state.update_data(manual_user_target=target)
+    await state.set_state(AdminStates.manual_reward_amount)
+
+    data = await state.get_data()
+    action = data.get("manual_action_type", "referrals")
+    unit = "ta referal" if action == "referrals" else "ball"
+
+    first_name = html.escape(user.get("first_name", "Foydalanuvchi"))
+    await message.reply(
+        f"✅ Foydalanuvchi topildi: <b>{first_name}</b> (ID: <code>{user['user_id']}</code>)\n"
+        f"👥 Hozirgi referallari: <b>{user.get('referral_count', 0)}</b> ta\n"
+        f"⭐️ Hozirgi bali: <b>{user.get('points', 0)}</b> ball\n\n"
+        f"✍️ Nechta <b>{unit}</b> qo'shmoqchisiz?\n"
+        f"(Masalan: <code>5</code> yoki <code>10</code>)",
+        parse_mode="HTML",
+    )
+
+
+@router.message(AdminStates.manual_reward_amount)
+async def admin_manual_reward_amount_finish(message: Message, state: FSMContext, bot: Bot) -> None:
+    """Miqdorni qo'llash va bildirishnoma yuborish."""
+    amt_str = message.text.strip() if message.text else "0"
+    try:
+        amount = int(amt_str)
+    except ValueError:
+        await message.reply("❌ Miqdor butun son bo'lishi kerak. Qaytadan kiriting:")
+        return
+
+    data = await state.get_data()
+    await state.clear()
+
+    target = data.get("manual_user_target", "")
+    action = data.get("manual_action_type", "referrals")
+
+    if action == "referrals":
+        success, msg, u_dict = await manual_add_user_referrals(target, amount)
+        if success and u_dict:
+            try:
+                sign = "+" if amount > 0 else ""
+                await bot.send_message(
+                    u_dict["user_id"],
+                    f"🎁 <b>ADMIN BONUST!</b>\n\n"
+                    f"Admin tomonidan sizning profilingizga <b>{sign}{amount} ta referal</b> va ball qo'shildi! 🚀\n"
+                    f"📊 Sizning jami referallaringiz: <b>{u_dict['referral_count']}</b> ta\n"
+                    f"⭐️ Sizning jami balingiz: <b>{u_dict['points']}</b> ball",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+    else:
+        success, msg, u_dict = await manual_add_user_points(target, amount)
+        if success and u_dict:
+            try:
+                sign = "+" if amount > 0 else ""
+                await bot.send_message(
+                    u_dict["user_id"],
+                    f"🎁 <b>ADMIN BONUST!</b>\n\n"
+                    f"Admin tomonidan sizning profilingizga <b>{sign}{amount} ball</b> taqdim etildi! 🌟\n"
+                    f"⭐️ Sizning jami balingiz: <b>{u_dict['points']}</b> ball",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Admin Menyu", callback_data="admin:menu")],
+    ])
+    await message.reply(f"{msg}", parse_mode="HTML", reply_markup=kb)
 
 
 # ── KUNLIK POST SOZLASH ──
@@ -2159,3 +2575,23 @@ async def on_group_message(message: Message, bot: Bot) -> None:
             message_id=message.message_id,
             chat_id=message.chat.id,
         )
+
+    # 4. Guruh faolligi (Chat Mining: har 15 ta xabarda +1 ball)
+    try:
+        user_mined, current_count, total_mined = await record_group_chat_activity(
+            user_id=message.from_user.id,
+            chat_id=message.chat.id,
+        )
+        if user_mined:
+            first_name = message.from_user.first_name or "Foydalanuvchi"
+            safe_name = html.escape(first_name)
+            user_tag = f'<a href="tg://user?id={message.from_user.id}">{safe_name}</a>'
+            bonus_msg = await message.reply(
+                f"🔥 <b>CHAT FAOLLIK BONUST!</b>\n\n"
+                f"🎉 {user_tag}, guruhdagi 15 ta faol xabaringiz uchun profilingizga <b>+1 ball</b> qo'shildi! 🚀\n"
+                f"<i>(Jami chatdan ishlangan: {total_mined} ball)</i>",
+                parse_mode="HTML",
+            )
+            asyncio.create_task(_auto_delete_msg(bot, message.chat.id, bonus_msg.message_id, delay=30))
+    except Exception as e:
+        logger.warning("Chat mining xatosi: %s", e)

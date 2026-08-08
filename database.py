@@ -18,6 +18,7 @@ Jadvallar:
 import os
 import aiosqlite
 import logging
+import random
 from datetime import datetime, timedelta, timezone
 
 # Railway volume uchun: DB_PATH=/data/activity.db qilib sozlash mumkin
@@ -27,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 async def init_db() -> None:
     """Bazani yaratadi va barcha jadvallarni tuzadi."""
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir and not os.path.exists(db_dir):
+        os.makedirs(db_dir, exist_ok=True)
+
     async with aiosqlite.connect(DB_PATH) as db:
         # Ulangan kanallar va guruhlar
         await db.execute("""
@@ -188,6 +193,12 @@ async def init_db() -> None:
             )
         """)
 
+        # Migration: promo_codes ga reward_type qo'shish ('points' yoki 'referrals')
+        try:
+            await db.execute("ALTER TABLE promo_codes ADD COLUMN reward_type TEXT DEFAULT 'points'")
+        except Exception:
+            pass
+
         # Promokod ishlatganlar
         await db.execute("""
             CREATE TABLE IF NOT EXISTS promo_claims (
@@ -196,6 +207,32 @@ async def init_db() -> None:
                 user_id INTEGER NOT NULL,
                 claimed_at DATETIME DEFAULT (datetime('now')),
                 UNIQUE(promo_id, user_id)
+            )
+        """)
+
+        # ── OMAD G'ILDIRAGI JADVALI ──
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS daily_wheel_spins (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                spin_date TEXT NOT NULL,
+                reward_type TEXT NOT NULL,
+                reward_value INTEGER NOT NULL,
+                created_at DATETIME DEFAULT (datetime('now')),
+                UNIQUE(user_id, spin_date)
+            )
+        """)
+
+        # ── GURUHDAGI FAOLLIKNI HISOB-KITOBLARI (CHAT MINING) ──
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS group_chat_activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                msg_count INTEGER DEFAULT 0,
+                total_points_earned INTEGER DEFAULT 0,
+                last_msg_at DATETIME DEFAULT (datetime('now')),
+                UNIQUE(user_id, chat_id)
             )
         """)
 
@@ -220,6 +257,9 @@ async def init_db() -> None:
         """)
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_contest_part_cid ON contest_participants(contest_id)
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_wheel_user_date ON daily_wheel_spins(user_id, spin_date)
         """)
         await db.commit()
     logger.info("Ma'lumotlar bazasi va Smart Viral Contest jadvallari tayyor.")
@@ -650,13 +690,15 @@ async def process_referral_reward(
     new_user_id: int,
     new_user_name: str | None,
     new_user_first_name: str,
-) -> tuple[bool, int, dict | None]:
+) -> tuple[bool, int, dict | None, dict | None]:
     """
-    Yangi do'st kanalga muvaffaqiyatli obuna bo'lganda taklif qilganga +1 ball va bonuslarni beradi.
-    Qaytaradi: (awarded, total_points, milestone_dict or None)
+    Yangi do'st kanalga muvaffaqiyatli obuna bo'lganda:
+    1. 1-darajali taklif qilganga +1 ball va pog'onali bonuslarni beradi.
+    2. 2-darajali taklif qilgan (grand-referrer) ga passiv +1 bonus ball beradi.
+    Qaytaradi: (awarded, total_points, milestone_dict or None, tier2_dict or None)
     """
     if referrer_id == new_user_id or referrer_id <= 0:
-        return False, 0, None
+        return False, 0, None, None
 
     async with aiosqlite.connect(DB_PATH) as db:
         # Allaqachon bu referal uchun mukofot berilganmi tekshirish
@@ -668,7 +710,7 @@ async def process_referral_reward(
 
         if existing_ref:
             # Allaqachon mavjud
-            return False, 0, None
+            return False, 0, None, None
 
         # Referallarga yozish
         await db.execute(
@@ -696,7 +738,7 @@ async def process_referral_reward(
         referrer = await cursor.fetchone()
         if not referrer:
             await db.commit()
-            return True, 1, None
+            return True, 1, None, None
 
         ref_dict = dict(referrer)
         current_refs = ref_dict["referral_count"]
@@ -733,6 +775,19 @@ async def process_referral_reward(
                 "title": "👑 VIP STATUS va +15 qo'shimcha ball berildi!",
             }
 
+        # ── 2-POG'ONALI (TIER 2) REFERAL BONUSI ──
+        tier2_info = None
+        grand_referrer_id = ref_dict.get("referred_by", 0)
+        if grand_referrer_id and grand_referrer_id > 0 and grand_referrer_id != referrer_id:
+            await db.execute(
+                "UPDATE bot_users SET points = points + 1, bonus_points = bonus_points + 1 WHERE user_id = ?",
+                (grand_referrer_id,),
+            )
+            tier2_info = {
+                "grand_referrer_id": grand_referrer_id,
+                "bonus": 1,
+            }
+
         await db.commit()
 
         # So'nggi umumiy ballni olish
@@ -740,7 +795,7 @@ async def process_referral_reward(
         final_row = await cursor.fetchone()
         final_points = final_row[0] if final_row else ref_dict["points"]
 
-        return True, final_points, milestone
+        return True, final_points, milestone, tier2_info
 
 
 async def process_referral_drop(leaving_user_id: int) -> tuple[int | None, str | None, int | None]:
@@ -848,21 +903,111 @@ async def claim_daily_post_reward(user_id: int) -> tuple[bool, str]:
             return False, "⚠️ Siz bugungi post uchun ajratilgan ballni allaqachon olgansiz! Ertaga yana urinib ko'ring."
 
 
-async def create_promo_code(code: str, reward_points: int = 2, max_uses: int = 50) -> bool:
-    """Yangi yashirin promokod yaratish."""
+async def find_user_by_id_or_username(user_identifier: str | int) -> dict | None:
+    """Foydalanuvchini ID yoki @username orqali qidiradi."""
+    raw_str = str(user_identifier).strip()
+    if raw_str.startswith("@"):
+        clean_user = raw_str[1:].lower()
+    else:
+        clean_user = raw_str.lower()
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if clean_user.isdigit():
+            cursor = await db.execute("SELECT * FROM bot_users WHERE user_id = ?", (int(clean_user),))
+        else:
+            cursor = await db.execute("SELECT * FROM bot_users WHERE LOWER(username) = ?", (clean_user,))
+        row = await cursor.fetchone()
+        if row:
+            return dict(row)
+    return None
+
+
+async def manual_add_user_referrals(user_identifier: str | int, amount: int) -> tuple[bool, str, dict | None]:
+    """
+    Admin tomonidan foydalanuvchiga to'g'ridan-to'g'ri referal va ball qo'shish.
+    Qaytaradi: (success, message, user_dict)
+    """
+    user = await find_user_by_id_or_username(user_identifier)
+    if not user:
+        return False, f"❌ Foydalanuvchi topilmadi: {user_identifier}", None
+
+    uid = user["user_id"]
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE bot_users SET
+                referral_count = MAX(0, referral_count + ?),
+                points = MAX(0, points + ?),
+                bonus_points = bonus_points + ?
+            WHERE user_id = ?
+            """,
+            (amount, amount, max(0, amount), uid),
+        )
+        await db.commit()
+
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM bot_users WHERE user_id = ?", (uid,))
+        updated_row = await cursor.fetchone()
+
+    updated_dict = dict(updated_row) if updated_row else user
+    sign = "+" if amount > 0 else ""
+    return True, f"✅ Foydalanuvchi {user.get('first_name', '')} (@{user.get('username') or uid}) ga {sign}{amount} ta referal va ball qo'shildi!", updated_dict
+
+
+async def manual_add_user_points(user_identifier: str | int, amount: int) -> tuple[bool, str, dict | None]:
+    """
+    Admin tomonidan foydalanuvchiga to'g'ridan-to'g'ri ball qo'shish.
+    Qaytaradi: (success, message, user_dict)
+    """
+    user = await find_user_by_id_or_username(user_identifier)
+    if not user:
+        return False, f"❌ Foydalanuvchi topilmadi: {user_identifier}", None
+
+    uid = user["user_id"]
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE bot_users SET
+                points = MAX(0, points + ?),
+                bonus_points = bonus_points + ?
+            WHERE user_id = ?
+            """,
+            (amount, max(0, amount), uid),
+        )
+        await db.commit()
+
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM bot_users WHERE user_id = ?", (uid,))
+        updated_row = await cursor.fetchone()
+
+    updated_dict = dict(updated_row) if updated_row else user
+    sign = "+" if amount > 0 else ""
+    return True, f"✅ Foydalanuvchi {user.get('first_name', '')} ga {sign}{amount} ball qo'shildi!", updated_dict
+
+
+async def create_promo_code(
+    code: str,
+    reward_type: str = "points",
+    reward_points: int = 2,
+    max_uses: int = 50,
+) -> bool:
+    """Yangi yashirin promokod yaratish (Ball yoki Referal beruvchi)."""
     clean_code = code.strip().upper()
+    r_type = "referrals" if reward_type == "referrals" else "points"
     async with aiosqlite.connect(DB_PATH) as db:
         try:
             await db.execute(
                 """
-                INSERT INTO promo_codes (code, reward_points, max_uses, used_count, is_active)
-                VALUES (?, ?, ?, 0, 1)
+                INSERT INTO promo_codes (code, reward_type, reward_points, max_uses, used_count, is_active)
+                VALUES (?, ?, ?, ?, 0, 1)
                 ON CONFLICT(code) DO UPDATE SET
+                    reward_type = excluded.reward_type,
                     reward_points = excluded.reward_points,
                     max_uses = excluded.max_uses,
                     is_active = 1
                 """,
-                (clean_code, reward_points, max_uses),
+                (clean_code, r_type, reward_points, max_uses),
             )
             await db.commit()
             return True
@@ -871,10 +1016,10 @@ async def create_promo_code(code: str, reward_points: int = 2, max_uses: int = 5
             return False
 
 
-async def claim_promo_code(user_id: int, code_str: str) -> tuple[bool, str, int]:
+async def claim_promo_code(user_id: int, code_str: str) -> tuple[bool, str, int, str]:
     """
-    Foydalanuvchi promokodni kiritganda tekshirish va ball berish.
-    Qaytaradi: (success, message, reward_points)
+    Foydalanuvchi promokodni kiritganda tekshirish va ball/referal berish.
+    Qaytaradi: (success, message, reward_amount, reward_type)
     """
     clean_code = code_str.strip().upper()
     async with aiosqlite.connect(DB_PATH) as db:
@@ -883,11 +1028,11 @@ async def claim_promo_code(user_id: int, code_str: str) -> tuple[bool, str, int]
         promo = await cursor.fetchone()
 
         if not promo:
-            return False, "❌ Bunday promokod mavjud emas yoki muddati tugagan.", 0
+            return False, "❌ Bunday promokod mavjud emas yoki muddati tugagan.", 0, "points"
 
         promo_dict = dict(promo)
         if promo_dict["used_count"] >= promo_dict["max_uses"]:
-            return False, f"⚠️ Ushbu promokoddan foydalanish soni ({promo_dict['max_uses']} ta) allaqachon tugagan!", 0
+            return False, f"⚠️ Ushbu promokoddan foydalanish soni ({promo_dict['max_uses']} ta) allaqachon tugagan!", 0, "points"
 
         # Foydalanuvchi avval ishlatganmi?
         cursor = await db.execute(
@@ -895,18 +1040,220 @@ async def claim_promo_code(user_id: int, code_str: str) -> tuple[bool, str, int]
             (promo_dict["id"], user_id),
         )
         if await cursor.fetchone():
-            return False, "⚠️ Siz ushbu promokoddan allaqachon foydalangansiz!", 0
+            return False, "⚠️ Siz ushbu promokoddan allaqachon foydalangansiz!", 0, "points"
 
-        # Ball berish va qayd etish
+        reward_type = promo_dict.get("reward_type") or "points"
         pts = promo_dict["reward_points"]
+
         await db.execute("INSERT INTO promo_claims (promo_id, user_id) VALUES (?, ?)", (promo_dict["id"], user_id))
         await db.execute("UPDATE promo_codes SET used_count = used_count + 1 WHERE id = ?", (promo_dict["id"],))
+
+        if reward_type == "referrals":
+            # Referal qo'shish (referral_count + points)
+            await db.execute(
+                """
+                UPDATE bot_users SET
+                    referral_count = referral_count + ?,
+                    points = points + ?,
+                    bonus_points = bonus_points + ?
+                WHERE user_id = ?
+                """,
+                (pts, pts, pts, user_id),
+            )
+            await db.commit()
+            return True, f"🎉 Tabriklaymiz! Promokod faollashtirildi: profilingizga <b>+{pts} ta referal (do'st)</b> qo'shildi! Bu sizga konkurslarda qatnashish imkonini oshiradi! 🚀", pts, "referrals"
+        else:
+            # Oddiy ball qo'shish
+            await db.execute(
+                """
+                UPDATE bot_users SET
+                    points = points + ?,
+                    bonus_points = bonus_points + ?
+                WHERE user_id = ?
+                """,
+                (pts, pts, user_id),
+            )
+            await db.commit()
+            return True, f"🎉 Tabriklaymiz! Promokod faollashtirildi: sizga <b>+{pts} ball</b> qo'shildi!", pts, "points"
+
+
+# ── OMAD G'ILDIRAGI FUNKSIYALARI ──
+
+def _get_uzb_today_str() -> str:
+    """Toshkent vaqti bo'yicha YYYY-MM-DD sanani qaytaradi."""
+    uzb_now = datetime.now(timezone(timedelta(hours=5)))
+    return uzb_now.strftime("%Y-%m-%d")
+
+
+async def get_user_wheel_status(user_id: int) -> bool:
+    """Foydalanuvchi bugun g'ildirakni aylantira oladimi (True = aylantira oladi)."""
+    today_str = _get_uzb_today_str()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT 1 FROM daily_wheel_spins WHERE user_id = ? AND spin_date = ?",
+            (user_id, today_str),
+        )
+        row = await cursor.fetchone()
+        return row is None
+
+
+async def spin_lucky_wheel(user_id: int) -> tuple[bool, str, str, int]:
+    """
+    Kunlik omad g'ildiragini aylantiradi.
+    Qaytaradi: (success, result_message, reward_type, reward_value)
+    """
+    today_str = _get_uzb_today_str()
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Avval aylantirganmi tekshirish
+        cursor = await db.execute(
+            "SELECT 1 FROM daily_wheel_spins WHERE user_id = ? AND spin_date = ?",
+            (user_id, today_str),
+        )
+        if await cursor.fetchone():
+            return False, "⏳ Siz bugungi bepul imkoniyatingizdan foydalanib bo'ldingiz. Ertaga yana urinib ko'ring!", "none", 0
+
+        # Yutuqlar ehtimollik jadvali
+        # 1: +1 ball (40%)
+        # 2: +2 ball (25%)
+        # 3: +1 bepul referal (15%)
+        # 4: +3 ball (10%)
+        # 5: Omadli Chipta / +5 ball (5%)
+        # 6: 0 ball (5%)
+        outcomes = [
+            ("points", 1, "🎯 <b>+1 Ball</b> yutib oldingiz!", 40),
+            ("points", 2, "🚀 <b>+2 Ball</b> yutib oldingiz!", 25),
+            ("referrals", 1, "👥 <b>+1 Bepul Referal (Do'st)</b> yutib oldingiz!", 15),
+            ("points", 3, "🌟 <b>+3 Ball</b> yutib oldingiz!", 10),
+            ("points", 5, "🎟 <b>Omadli Chipta (+5 Ball)</b> yutib oldingiz! Super!", 5),
+            ("none", 0, "🔄 <b>Omadingiz kelmadi!</b> Ertaga albatta urinib ko'ring.", 5),
+        ]
+
+        population = [i for i in range(len(outcomes))]
+        weights = [o[3] for o in outcomes]
+        chosen_idx = random.choices(population, weights=weights, k=1)[0]
+        r_type, r_val, r_msg, _ = outcomes[chosen_idx]
+
+        # Yutuqni bazaga kiritish
         await db.execute(
-            "UPDATE bot_users SET points = points + ?, bonus_points = bonus_points + ? WHERE user_id = ?",
-            (pts, pts, user_id),
+            """
+            INSERT INTO daily_wheel_spins (user_id, spin_date, reward_type, reward_value)
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, today_str, r_type, r_val),
+        )
+
+        if r_type == "points" and r_val > 0:
+            await db.execute(
+                "UPDATE bot_users SET points = points + ?, bonus_points = bonus_points + ? WHERE user_id = ?",
+                (r_val, r_val, user_id),
+            )
+        elif r_type == "referrals" and r_val > 0:
+            await db.execute(
+                """
+                UPDATE bot_users SET
+                    referral_count = referral_count + ?,
+                    points = points + ?,
+                    bonus_points = bonus_points + ?
+                WHERE user_id = ?
+                """,
+                (r_val, r_val, r_val, user_id),
+            )
+
+        await db.commit()
+        return True, r_msg, r_type, r_val
+
+
+# ── HAFTALIK LIDERLAR REYTINGI ──
+
+async def get_weekly_top_referrers(limit: int = 10) -> list[dict]:
+    """Oxirgi 7 kundagi eng faol referal taklif qilgan liderlar."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT u.user_id, u.username, u.first_name, COUNT(r.id) as weekly_refs, u.points, u.vip_status
+            FROM referrals r
+            JOIN bot_users u ON r.referrer_id = u.user_id
+            WHERE r.status = 'active' AND r.created_at >= datetime('now', '-7 days')
+            GROUP BY r.referrer_id
+            ORDER BY weekly_refs DESC, u.points DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        if rows:
+            return [dict(r) for r in rows]
+
+        # Agar oxirgi 7 kunda bo'lmasa, umumiy topdan oladi
+        cursor = await db.execute(
+            """
+            SELECT user_id, username, first_name, referral_count as weekly_refs, points, vip_status
+            FROM bot_users
+            WHERE referral_count > 0
+            ORDER BY referral_count DESC, points DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+# ── GURUHDAGI FAOLLIK (CHAT MINING) ──
+
+async def record_group_chat_activity(user_id: int, chat_id: int) -> tuple[bool, int, int]:
+    """
+    Guruhda yozilgan xabarni qayd qiladi.
+    Har 15 ta xabar uchun avtomatik +1 ball beradi.
+    Qaytaradi: (awarded_bonus_now: bool, current_msg_count: int, total_points_earned: int)
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM group_chat_activity WHERE user_id = ? AND chat_id = ?",
+            (user_id, chat_id),
+        )
+        row = await cursor.fetchone()
+
+        if not row:
+            await db.execute(
+                """
+                INSERT INTO group_chat_activity (user_id, chat_id, msg_count, total_points_earned)
+                VALUES (?, ?, 1, 0)
+                """,
+                (user_id, chat_id),
+            )
+            await db.commit()
+            return False, 1, 0
+
+        act = dict(row)
+        new_count = act["msg_count"] + 1
+        awarded = False
+        total_earned = act.get("total_points_earned", 0)
+
+        # Har 15 ta xabarda +1 ball
+        if new_count >= 15:
+            new_count = 0
+            total_earned += 1
+            awarded = True
+            await db.execute(
+                "UPDATE bot_users SET points = points + 1, bonus_points = bonus_points + 1 WHERE user_id = ?",
+                (user_id,),
+            )
+
+        await db.execute(
+            """
+            UPDATE group_chat_activity SET
+                msg_count = ?,
+                total_points_earned = ?,
+                last_msg_at = datetime('now')
+            WHERE user_id = ? AND chat_id = ?
+            """,
+            (new_count, total_earned, user_id, chat_id),
         )
         await db.commit()
-        return True, f"🎉 Tabriklaymiz! Promokod faollashtirildi: sizga +{pts} ball qo'shildi!", pts
+        return awarded, new_count, total_earned
 
 
 # ─────────────────────────────────────────────
