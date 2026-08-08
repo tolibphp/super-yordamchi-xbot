@@ -110,6 +110,12 @@ async def init_db() -> None:
             )
         """)
 
+        # Migration: birthday ustuni yo'q bo'lsa qo'shish
+        try:
+            await db.execute("ALTER TABLE bot_users ADD COLUMN birthday TEXT DEFAULT NULL")
+        except Exception:
+            pass
+
         # Referallar jadvali (Anti-Drop va jarima kuzatuvi)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS referrals (
@@ -1146,3 +1152,164 @@ async def get_admin_stats() -> dict:
         "total_mandatory": total_mandatory,
         "active_contests": active_contests,
     }
+
+
+# ─────────────────────────────────────────────
+# 🎂 TUG'ILGAN KUN HISOB-KITOBI VA TIZIMI
+# ─────────────────────────────────────────────
+
+UZB_MONTH_NAMES = {
+    1: "yanvar", 2: "fevral", 3: "mart", 4: "aprel", 5: "may", 6: "iyun",
+    7: "iyul", 8: "avgust", 9: "sentyabr", 10: "oktyabr", 11: "noyabr", 12: "dekabr",
+}
+
+UZB_MONTH_NUMBERS = {
+    "yanvar": 1, "fevral": 2, "mart": 3, "aprel": 4, "may": 5, "iyun": 6,
+    "iyul": 7, "avgust": 8, "sentyabr": 9, "oktyabr": 10, "noyabr": 11, "dekabr": 12,
+    "yan": 1, "fev": 2, "mar": 3, "apr": 4, "iyul": 7, "avg": 8, "sen": 9, "okt": 10, "noy": 11, "dek": 12,
+    "январь": 1, "февраль": 2, "март": 3, "апрель": 4, "май": 5, "июнь": 6,
+    "июль": 7, "август": 8, "сентябрь": 9, "октябрь": 10, "ноябрь": 11, "декабрь": 12,
+}
+
+
+def parse_birthday_string(text: str) -> tuple[int, int, str] | None:
+    """
+    Turli formatdagi tug'ilgan kun matnini tahlil qiladi.
+    Formatlar:
+    - 15.08, 15/08, 15-08
+    - 15.08.2000, 2000-08-15
+    - 15-avgust, 15 avgust, 15 avg
+    Qaytaradi: (day: int, month: int, formatted_str: str) masalan (15, 8, "15-avgust")
+    """
+    if not text:
+        return None
+
+    cleaned = text.strip().lower()
+
+    # 1. So'zli format: "15 avgust" yoki "15-avgust"
+    import re
+    word_match = re.match(r"^(\d{1,2})[\s\-_/\.]([a-zA-Zа-яА-ЯёЁ\']+)", cleaned)
+    if word_match:
+        d = int(word_match.group(1))
+        m_word = word_match.group(2).strip()
+        m = UZB_MONTH_NUMBERS.get(m_word)
+        if m and 1 <= d <= 31:
+            try:
+                # Sananing to'g'riligini tekshirish (masalan 31 fevral xato)
+                datetime(2024, m, d)
+                m_name = UZB_MONTH_NAMES[m]
+                return d, m, f"{d}-{m_name}"
+            except ValueError:
+                return None
+
+    # 2. Raqamli format: "15.08" yoki "15.08.2000" yoki "15-08" yoki "15/08"
+    parts = re.split(r"[\.\-/\s]+", cleaned)
+    if len(parts) >= 2:
+        try:
+            if len(parts[0]) == 4:
+                # "2000-08-15" (ISO format)
+                d = int(parts[2])
+                m = int(parts[1])
+            else:
+                # "15.08" yoki "15.08.2000"
+                d = int(parts[0])
+                m = int(parts[1])
+
+            if 1 <= d <= 31 and 1 <= m <= 12:
+                datetime(2024, m, d)
+                m_name = UZB_MONTH_NAMES[m]
+                return d, m, f"{d}-{m_name}"
+        except Exception:
+            return None
+
+    return None
+
+
+def calculate_days_until_birthday(day: int, month: int) -> int:
+    """O'zbekiston vaqti (UTC+5) bilan keyingi tug'ilgan kungacha necha kun qolganini hisoblaydi."""
+    uzb_now = datetime.now(timezone(timedelta(hours=5)))
+    today_date = uzb_now.date()
+    current_year = today_date.year
+
+    try:
+        bday_this_year = datetime(current_year, month, day).date()
+    except ValueError:
+        # Masalan 29-fevral kabisa bo'lmagan yilda
+        bday_this_year = datetime(current_year, 2, 28).date()
+
+    if bday_this_year < today_date:
+        next_year = current_year + 1
+        try:
+            bday_next = datetime(next_year, month, day).date()
+        except ValueError:
+            bday_next = datetime(next_year, 2, 28).date()
+        return (bday_next - today_date).days
+    else:
+        return (bday_this_year - today_date).days
+
+
+async def set_user_birthday(user_id: int, birthday_str: str) -> bool:
+    """Foydalanuvchining tug'ilgan kunini bazaga saqlaydi."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE bot_users SET birthday = ? WHERE user_id = ?",
+            (birthday_str, user_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def get_user_birthday(user_id: int) -> str | None:
+    """Foydalanuvchining tug'ilgan kunini oladi."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT birthday FROM bot_users WHERE user_id = ? LIMIT 1",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+    return row[0] if row and row[0] else None
+
+
+async def get_birthday_insights(limit: int = 5) -> tuple[list[dict], list[dict]]:
+    """
+    Bugun tug'ilgan kun egalarini va eng yaqin kelayotgan tug'ilgan kunlar (Top-N) hisoblagichini qaytaradi.
+    Qaytaradi: (today_birthdays, upcoming_birthdays)
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT user_id, username, first_name, birthday FROM bot_users WHERE birthday IS NOT NULL AND birthday != ''"
+        )
+        rows = await cursor.fetchall()
+
+    today_list = []
+    upcoming_list = []
+
+    for r in rows:
+        bday_str = r["birthday"]
+        parsed = parse_birthday_string(bday_str)
+        if not parsed:
+            continue
+        d, m, fmt_date = parsed
+        days_left = calculate_days_until_birthday(d, m)
+
+        user_info = {
+            "user_id": r["user_id"],
+            "username": r["username"],
+            "first_name": r["first_name"],
+            "birthday_str": fmt_date,
+            "days_left": days_left,
+            "day": d,
+            "month": m,
+        }
+
+        if days_left == 0:
+            today_list.append(user_info)
+        else:
+            upcoming_list.append(user_info)
+
+    # Yaqinlik bo'yicha saralash
+    upcoming_list.sort(key=lambda x: x["days_left"])
+
+    return today_list, upcoming_list[:limit]
+

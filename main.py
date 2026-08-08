@@ -11,9 +11,10 @@ from datetime import datetime
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 
-from config import BOT_TOKEN, ADMIN_ID
+from config import BOT_TOKEN, ADMIN_ID, get_uzb_now
 from database import init_db
 from handlers import router, set_bot_username
+from birthday import broadcast_daily_birthdays
 
 
 def setup_logging() -> None:
@@ -40,6 +41,35 @@ def setup_logging() -> None:
     logging.getLogger("aiogram").setLevel(logging.WARNING)
 
 
+async def daily_birthday_scheduler(bot: Bot) -> None:
+    """
+    O'zbekiston vaqti (UTC+5) bo'yicha har kuni ertalab soat 09:00 da
+    barcha ulangan guruhlarga kunlik tug'ilgan kun postini e'lon qiluvchi fon vazifasi.
+    """
+    scheduler_logger = logging.getLogger("birthday_scheduler")
+    last_sent_date: str = ""
+    me = await bot.get_me()
+    bot_uname = me.username or ""
+
+    while True:
+        try:
+            now_uzb = get_uzb_now()
+            today_str = now_uzb.strftime("%Y-%m-%d")
+
+            # Har kuni soat 09:00 da (va faqat bir marta)
+            if now_uzb.hour == 9 and last_sent_date != today_str:
+                scheduler_logger.info("Guruhlarga kunlik tug'ilgan kun xabarnomasi yuborilmoqda (%s)", today_str)
+                await broadcast_daily_birthdays(bot, bot_uname)
+                last_sent_date = today_str
+
+            await asyncio.sleep(45)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            scheduler_logger.error("Kunlik tug'ilgan kun schedulerida xato: %s", e)
+            await asyncio.sleep(60)
+
+
 async def main() -> None:
     """Asosiy funksiya: bot va dispatcherni ishga tushiradi."""
     setup_logging()
@@ -62,21 +92,25 @@ async def main() -> None:
     dp = Dispatcher()
     dp.include_router(router)
 
+    # Kunlik tug'ilgan kun hisoblagichi fon vazifasini ishga tushirish
+    scheduler_task = asyncio.create_task(daily_birthday_scheduler(bot))
+
     logger.info("Polling boshlandi. Botni to'xtatish uchun Ctrl+C bosing.")
 
     try:
         # Adminga bot ishga tushganini xabar berish (agar ADMIN_ID ko'rsatilgan bo'lsa)
         if ADMIN_ID:
             try:
+                uzb_time = get_uzb_now().strftime("%Y-%m-%d %H:%M:%S")
                 await bot.send_message(
                     ADMIN_ID,
                     f"✅ Bot muvaffaqiyatli ishga tushdi!\n"
-                    f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    f"⏰ Toshkent vaqti: {uzb_time}"
                 )
             except Exception as e:
                 logger.warning("Adminga xabar yuborib bo'lmadi: %s", e)
 
-        # Barcha kerakli update turlarini qabul qilish (shu jumladan inline knopkalar uchun callback_query)
+        # Barcha kerakli update turlarini qabul qilish
         await dp.start_polling(
             bot,
             allowed_updates=[
@@ -90,9 +124,11 @@ async def main() -> None:
             drop_pending_updates=True,
         )
     finally:
+        scheduler_task.cancel()
         await bot.session.close()
         logger.info("Bot to'xtatildi.")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+

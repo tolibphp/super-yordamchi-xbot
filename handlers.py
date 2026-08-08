@@ -67,6 +67,11 @@ from database import (
     get_all_bot_user_ids,
     get_bot_setting,
     set_bot_setting,
+    set_user_birthday,
+    get_user_birthday,
+    get_birthday_insights,
+    parse_birthday_string,
+    calculate_days_until_birthday,
 )
 from membership import check_membership, check_all_mandatory_subs
 from winner import pick_winner
@@ -78,6 +83,7 @@ from contest import (
     draw_contest_winners,
     update_contest_channel_posts,
 )
+from birthday import build_daily_birthday_group_post, broadcast_daily_birthdays
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -103,6 +109,7 @@ class AdminStates(StatesGroup):
 class UserStates(StatesGroup):
     """Foydalanuvchi holatlari."""
     waiting_promo_code = State()
+    waiting_birthday_input = State()
 
 
 async def set_bot_username(bot: Bot) -> None:
@@ -289,7 +296,24 @@ async def cmd_start(message: Message, bot: Bot, state: FSMContext) -> None:
         await message.answer(reg_msg, parse_mode="HTML", reply_markup=reg_kb)
         return
 
-    # 6. Oddiy holat: Asosiy dashboardni chiqarish
+    # 6. Tug'ilgan kunni kiritish uchun kelgan bo'lsa
+    if payload == "birthday":
+        await state.set_state(UserStates.waiting_birthday_input)
+        bday_prompt = (
+            "🎂 <b>TUG'ILGAN KUNINGIZNI KIRITING</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Tug'ilgan kuningiz sanasini yuboring. Har yili ushbu sanada sizni guruhimizda qizg'in tabriklaymiz "
+            "va kuningizgacha qolgan vaqtni hisoblab boramiz! 🎉\n\n"
+            "✍️ <b>Namuna:</b> <code>15.08</code> yoki <code>15-avgust</code> yoki <code>15.08.2002</code>"
+        )
+        bday_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="👤 Profilim", callback_data="user:profile")],
+            [InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")],
+        ])
+        await message.answer(bday_prompt, parse_mode="HTML", reply_markup=bday_kb)
+        return
+
+    # 7. Oddiy holat: Asosiy dashboardni chiqarish
     dash_text, dash_kb = _build_user_dashboard(user_dict, _bot_username)
     await message.answer(dash_text, parse_mode="HTML", reply_markup=dash_kb)
 
@@ -299,7 +323,7 @@ async def cmd_start(message: Message, bot: Bot, state: FSMContext) -> None:
 # ─────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("user:verify_sub:"))
-async def cb_user_verify_sub(query: CallbackQuery, bot: Bot) -> None:
+async def cb_user_verify_sub(query: CallbackQuery, bot: Bot, state: FSMContext) -> None:
     """Foydalanuvchi Gatekeeperda obunani tasdiqlaganda."""
     if not _bot_username:
         await set_bot_username(bot)
@@ -375,6 +399,23 @@ async def cb_user_verify_sub(query: CallbackQuery, bot: Bot) -> None:
         ])
         if query.message:
             await query.message.edit_text(reg_msg, parse_mode="HTML", reply_markup=reg_kb)
+        return
+
+    if payload == "birthday":
+        await state.set_state(UserStates.waiting_birthday_input)
+        bday_prompt = (
+            "🎂 <b>TUG'ILGAN KUNINGIZNI KIRITING</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Tug'ilgan kuningiz sanasini yuboring. Har yili ushbu sanada sizni guruhimizda qizg'in tabriklaymiz "
+            "va kuningizgacha qolgan vaqtni hisoblab boramiz! 🎉\n\n"
+            "✍️ <b>Namuna:</b> <code>15.08</code> yoki <code>15-avgust</code> yoki <code>15.08.2002</code>"
+        )
+        bday_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="👤 Profilim", callback_data="user:profile")],
+            [InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")],
+        ])
+        if query.message:
+            await query.message.edit_text(bday_prompt, parse_mode="HTML", reply_markup=bday_kb)
         return
 
     dash_text, dash_kb = _build_user_dashboard(user_dict, _bot_username)
@@ -478,13 +519,35 @@ async def cb_user_profile(query: CallbackQuery, bot: Bot) -> None:
     prem_status = "✅ Tayyor (Qatnasha olasiz)" if refs >= 50 else f"⏳ Yana {50 - refs} ta do'st kerak"
     vip_label = "👑 VIP Foydalanuvchi" if is_vip else "Oddiy A'zo"
 
+    # Tug'ilgan kun hisob-kitobi
+    birthday = user.get("birthday")
+    if birthday:
+        parsed_bday = parse_birthday_string(birthday)
+        if parsed_bday:
+            bd_d, bd_m, bd_fmt = parsed_bday
+            days_left = calculate_days_until_birthday(bd_d, bd_m)
+            if days_left == 0:
+                bday_display = f"🎂 <b>{bd_fmt}</b> (Bugun tavallud ayyomingiz! 🥳)"
+            elif days_left == 1:
+                bday_display = f"🎂 <b>{bd_fmt}</b> (Ertaga! ⏳)"
+            else:
+                bday_display = f"🎂 <b>{bd_fmt}</b> ({days_left} kun qoldi ⏳)"
+            bday_btn_text = "🎂 Tug'ilgan kunni o'zgartirish"
+        else:
+            bday_display = f"🎂 <b>{birthday}</b>"
+            bday_btn_text = "🎂 Tug'ilgan kunni o'zgartirish"
+    else:
+        bday_display = "<i>Belgilanmagan</i>"
+        bday_btn_text = "🎂 Tug'ilgan kunimni kiritish"
+
     text = (
         f"👤 <b>SIZNING SHAXSIY PROFILINGIZ</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
         f"👤 <b>Ism:</b> {name}\n"
         f"👑 <b>Status:</b> {vip_label}\n"
-        f"📅 <b>Qo'shilgan sana:</b> {joined}\n\n"
+        f"📅 <b>Qo'shilgan sana:</b> {joined}\n"
+        f"🎂 <b>Tug'ilgan kun:</b> {bday_display}\n\n"
         f"📊 <b>HISOB STATISTIKASI:</b>\n"
         f"💰 <b>Jami ballar:</b> <b>{pts}</b> ball\n"
         f"👥 <b>Chaqirilgan do'stlar:</b> <b>{refs}</b> ta\n"
@@ -500,6 +563,9 @@ async def cb_user_profile(query: CallbackQuery, bot: Bot) -> None:
             InlineKeyboardButton(text="🚀 Do'stlarni taklif qilish", callback_data="user:share"),
         ],
         [
+            InlineKeyboardButton(text=bday_btn_text, callback_data="user:set_birthday"),
+        ],
+        [
             InlineKeyboardButton(text="🎁 Konkurslarga o'tish", callback_data="user:contests"),
             InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu"),
         ],
@@ -508,6 +574,117 @@ async def cb_user_profile(query: CallbackQuery, bot: Bot) -> None:
     if query.message:
         await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
     await query.answer()
+
+
+@router.callback_query(F.data == "user:set_birthday")
+async def cb_user_set_birthday(query: CallbackQuery, state: FSMContext) -> None:
+    """Tug'ilgan kunni kiritish holatini yoqish."""
+    await state.set_state(UserStates.waiting_birthday_input)
+    text = (
+        "🎂 <b>TUG'ILGAN KUNINGIZNI KIRITING</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Tug'ilgan kuningiz sanasini yuboring. Har yili ushbu sanada sizni guruhimizda qizg'in tabriklaymiz "
+        "va kuningizgacha qolgan vaqtni hisoblab boramiz! 🎉\n\n"
+        "✍️ <b>Masalan:</b> <code>15.08</code> yoki <code>15-avgust</code> yoki <code>15.08.2002</code>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="user:profile")],
+    ])
+    if query.message:
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await query.answer()
+
+
+@router.message(UserStates.waiting_birthday_input)
+async def user_enter_birthday(message: Message, state: FSMContext) -> None:
+    """Foydalanuvchi tug'ilgan kun sanasini yuborganda."""
+    if not message.from_user or not message.text:
+        return
+
+    parsed = parse_birthday_string(message.text)
+    if not parsed:
+        err_text = (
+            "❌ <b>Sana formati noto'g'ri!</b>\n\n"
+            "Iltimos, namunadagidek yozing:\n"
+            "• <code>15.08</code>\n"
+            "• <code>15-avgust</code>\n"
+            "• <code>15.08.2002</code>"
+        )
+        await message.reply(err_text, parse_mode="HTML")
+        return
+
+    d, m, fmt_date = parsed
+    days_left = calculate_days_until_birthday(d, m)
+    user_id = message.from_user.id
+
+    # Bazaga saqlash
+    await set_user_birthday(user_id, fmt_date)
+    await state.clear()
+
+    if days_left == 0:
+        status_line = "🥳 <b>Bugun sizning tavallud ayyomingiz! Chin dildan tabriklaymiz! 🎉🎂</b>"
+    elif days_left == 1:
+        status_line = "⏳ <b>Tug'ilgan kuningizga atigi 1 kun (ertaga!) qoldi! 🎉</b>"
+    else:
+        status_line = f"⏳ Tug'ilgan kuningizga <b>{days_left} kun</b> qoldi!"
+
+    success_text = (
+        f"🎉 <b>Tug'ilgan kuningiz muvaffaqiyatli saqlandi!</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📅 <b>Belgilangan sana:</b> <b>{fmt_date}</b>\n"
+        f"{status_line}\n\n"
+        f"<i>Ushbu sanada sizni guruhimizda barcha a'zolar bilan birgalikda maxsus tabriklaymiz! 🎁✨</i>"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👤 Profilim", callback_data="user:profile")],
+        [InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")],
+    ])
+
+    await message.reply(success_text, parse_mode="HTML", reply_markup=kb)
+
+
+@router.message(Command("tugilgan_kun", "birthday"))
+async def cmd_user_birthday(message: Message, state: FSMContext) -> None:
+    """/tugilgan_kun yoki /birthday buyrug'i."""
+    if message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+        # Guruhda buyruq berilsa, botga o'tish tugmasini beramiz
+        b_text = (
+            "🎂 <b>Tug'ilgan kuningizni bot orqali belgilang!</b>\n\n"
+            "Har kuni guruhimizda eng yaqin tug'ilgan kunlar hisoblab boriladi va "
+            "tavallud ayyomingizda barchamiz sizni tabriklaymiz! 🎉"
+        )
+        b_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🎂 Sanani kiritish ↗️", url=f"https://t.me/{_bot_username}?start=birthday")],
+        ])
+        await message.reply(b_text, parse_mode="HTML", reply_markup=b_kb)
+        return
+
+    # Shaxsiy chatda
+    await state.set_state(UserStates.waiting_birthday_input)
+    prompt_text = (
+        "🎂 <b>TUG'ILGAN KUNINGIZNI KIRITING</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Tug'ilgan kuningiz sanasini yuboring. Har yili ushbu sanada sizni guruhimizda qizg'in tabriklaymiz "
+        "va kuningizgacha qolgan vaqtni hisoblab boramiz! 🎉\n\n"
+        "✍️ <b>Masalan:</b> <code>15.08</code> yoki <code>15-avgust</code> yoki <code>15.08.2002</code>"
+    )
+    b_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👤 Profilim", callback_data="user:profile")],
+        [InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")],
+    ])
+    await message.answer(prompt_text, parse_mode="HTML", reply_markup=b_kb)
+
+
+@router.message(Command("tugilgan_kunlar"))
+async def cmd_group_birthdays(message: Message, bot: Bot) -> None:
+    """Guruhda /tugilgan_kunlar bosilganda hisoblagich va tabriklarni ko'rsatish."""
+    if not _bot_username:
+        await set_bot_username(bot)
+
+    today_list, upcoming_list = await get_birthday_insights(limit=5)
+    post_text, kb = build_daily_birthday_group_post(_bot_username, today_list, upcoming_list)
+    await message.reply(post_text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
 
 
 @router.callback_query(F.data == "user:contests")

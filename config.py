@@ -17,3 +17,11 @@ if not BOT_TOKEN:
 
 # ADMIN_ID ixtiyoriy — agar raqam bo'lsa o'qiydi, bo'lmasa 0 bo'ladi
 ADMIN_ID: int = int(_raw_admin_id) if _raw_admin_id.isdigit() else 0
+
+# O'zbekiston vaqt mintaqasi (UTC+5, Tashkent)
+from datetime import datetime, timezone, timedelta
+UZB_TZ = timezone(timedelta(hours=5), name="Asia/Tashkent")
+
+def get_uzb_now() -> datetime:
+    """O'zbekiston vaqti bilan joriy vaqtni qaytaradi."""
+    return datetime.now(UZB_TZ)
