@@ -1845,7 +1845,7 @@ async def cb_admin_promo_post(query: CallbackQuery, bot: Bot, state: FSMContext)
         await query.answer("❌ Kanal topilmadi! Iltimos, admin panel orqali kanal ulang.", show_alert=True)
         return
         
-    channel_id = channels[0]["chat_id"]
+    channel_id = channels[0]["channel_id"]
     await state.clear()
     
     html_text = f"🎉 <b>YANGI PROMOKOD TAYYOR!</b>"
