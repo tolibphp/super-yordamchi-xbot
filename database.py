@@ -1025,10 +1025,18 @@ async def create_promo_code(
                     reward_type = excluded.reward_type,
                     reward_points = excluded.reward_points,
                     max_uses = excluded.max_uses,
+                    used_count = 0,
                     is_active = 1
                 """,
                 (clean_code, r_type, reward_points, max_uses),
             )
+            
+            cursor = await db.execute("SELECT id FROM promo_codes WHERE code = ?", (clean_code,))
+            row = await cursor.fetchone()
+            if row:
+                promo_id = row[0]
+                await db.execute("DELETE FROM promo_claims WHERE promo_id = ?", (promo_id,))
+                
             await db.commit()
             return True
         except Exception as e:
