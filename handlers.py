@@ -2435,6 +2435,71 @@ async def on_reaction(event: MessageReactionUpdated) -> None:
     )
 
 
+@router.message(Command(commands=["all", "hamma", "sall"]))
+async def cmd_tag_all(message: Message, bot: Bot) -> None:
+    """Guruhdagi barcha a'zolarni chaqirish (faqat adminlar uchun)."""
+    if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        await message.reply("⚠️ Bu buyruq faqat guruhlarda ishlaydi!")
+        return
+
+    # Adminligini tekshirish
+    is_admin = False
+    if message.from_user.id == ADMIN_ID:
+        is_admin = True
+    else:
+        try:
+            member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+            if member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR):
+                is_admin = True
+        except Exception:
+            pass
+
+    if not is_admin:
+        await message.reply("❌ Bu buyruqdan faqat guruh adminlari foydalana oladi.")
+        return
+
+    # Xabar matnini ajratib olish (agar mavjud bo'lsa)
+    is_silent = False
+    if message.text and message.text.startswith("/sall"):
+        is_silent = True
+        
+    text_parts = message.text.split(maxsplit=1)
+    tag_text = text_parts[1] if len(text_parts) > 1 else "📣 Diqqat! Barchangizni chaqirishmoqda!"
+
+    members = await get_group_members(message.chat.id)
+    if not members:
+        await message.reply("⚠️ Hozircha bu guruhda a'zolar bazaga saqlanmagan (faqat guruhda yozganlar belgilanadi).")
+        return
+
+    # Asosiy xabarni yuboramiz
+    main_msg = await message.reply(f"📢 <b>ADMIN XABARI:</b>\n\n{html.escape(tag_text)}", parse_mode="HTML")
+
+    # A'zolarni 10 tadan bo'lib jo'natamiz
+    chunk_size = 10
+    chunks = [members[i:i + chunk_size] for i in range(0, len(members), chunk_size)]
+    
+    for chunk in chunks:
+        mentions = []
+        for user in chunk:
+            name = user['first_name'] or "A'zo"
+            if is_silent:
+                # Ko'rinmas tag
+                mentions.append(f'<a href="tg://user?id={user["user_id"]}">&#8203;</a>')
+            else:
+                mentions.append(f'<a href="tg://user?id={user["user_id"]}">{html.escape(name)}</a>')
+        
+        if is_silent:
+            chunk_text = "📣" + "".join(mentions)
+        else:
+            chunk_text = ", ".join(mentions)
+            
+        try:
+            await main_msg.reply(chunk_text, parse_mode="HTML")
+            await asyncio.sleep(2.5)  # Spam/Flood limitdan qochish
+        except Exception as e:
+            logger.error("Tagging error: %s", e)
+
+
 @router.message(F.new_chat_members)
 async def on_new_chat_members(message: Message, bot: Bot) -> None:
     """Yangi a'zolarni kutib olish."""
@@ -2648,66 +2713,3 @@ async def on_group_message(message: Message, bot: Bot) -> None:
     except Exception as e:
         logger.warning("Chat mining xatosi: %s", e)
 
-@router.message(Command(commands=["all", "hamma", "sall"]))
-async def cmd_tag_all(message: Message, bot: Bot) -> None:
-    """Guruhdagi barcha a'zolarni chaqirish (faqat adminlar uchun)."""
-    if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
-        await message.reply("⚠️ Bu buyruq faqat guruhlarda ishlaydi!")
-        return
-
-    # Adminligini tekshirish
-    is_admin = False
-    if message.from_user.id == ADMIN_ID:
-        is_admin = True
-    else:
-        try:
-            member = await bot.get_chat_member(message.chat.id, message.from_user.id)
-            if member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR):
-                is_admin = True
-        except Exception:
-            pass
-
-    if not is_admin:
-        await message.reply("❌ Bu buyruqdan faqat guruh adminlari foydalana oladi.")
-        return
-
-    # Xabar matnini ajratib olish (agar mavjud bo'lsa)
-    is_silent = False
-    if message.text and message.text.startswith("/sall"):
-        is_silent = True
-        
-    text_parts = message.text.split(maxsplit=1)
-    tag_text = text_parts[1] if len(text_parts) > 1 else "📣 Diqqat! Barchangizni chaqirishmoqda!"
-
-    members = await get_group_members(message.chat.id)
-    if not members:
-        await message.reply("⚠️ Hozircha bu guruhda a'zolar bazaga saqlanmagan (faqat guruhda yozganlar belgilanadi).")
-        return
-
-    # Asosiy xabarni yuboramiz
-    main_msg = await message.reply(f"📢 <b>ADMIN XABARI:</b>\n\n{html.escape(tag_text)}", parse_mode="HTML")
-
-    # A'zolarni 10 tadan bo'lib jo'natamiz
-    chunk_size = 10
-    chunks = [members[i:i + chunk_size] for i in range(0, len(members), chunk_size)]
-    
-    for chunk in chunks:
-        mentions = []
-        for user in chunk:
-            name = user['first_name'] or "A'zo"
-            if is_silent:
-                # Ko'rinmas tag
-                mentions.append(f'<a href="tg://user?id={user["user_id"]}">&#8203;</a>')
-            else:
-                mentions.append(f'<a href="tg://user?id={user["user_id"]}">{html.escape(name)}</a>')
-        
-        if is_silent:
-            chunk_text = "📣" + "".join(mentions)
-        else:
-            chunk_text = ", ".join(mentions)
-            
-        try:
-            await main_msg.reply(chunk_text, parse_mode="HTML")
-            await asyncio.sleep(2.5)  # Spam/Flood limitdan qochish
-        except Exception as e:
-            logger.error("Tagging error: %s", e)
