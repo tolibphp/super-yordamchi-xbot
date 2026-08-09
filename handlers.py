@@ -111,6 +111,8 @@ class AdminStates(StatesGroup):
     promo_type = State()
     promo_points = State()
     promo_max_uses = State()
+    promo_post_channel = State()
+    promo_post_text = State()
     daily_post_url = State()
     broadcast_text = State()
     draw_custom_count = State()
@@ -344,11 +346,24 @@ async def cmd_start(message: Message, bot: Bot, state: FSMContext) -> None:
         await message.answer(bday_prompt, parse_mode="HTML", reply_markup=bday_kb)
         return
 
-    # 7. Oddiy holat: Asosiy dashboardni chiqarish
+    # 7. Promokod olish uchun kirgan bo'lsa (Deep-link orqali)
+    if payload.startswith("promo_"):
+        code_str = payload.replace("promo_", "")
+        success, msg, _pts, _p_type = await claim_promo_code(user_id, code_str)
+        if success:
+            await update_promo_channel_posts(bot, code_str)
+            msg = "🎉 <b>TABRIKLAYMIZ!</b>\n" + msg
+            
+        bday_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="👤 Profilim", callback_data="user:profile")],
+            [InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")],
+        ])
+        await message.answer(msg, parse_mode="HTML", reply_markup=bday_kb)
+        return
+
+    # 8. Oddiy holat: Asosiy dashboardni chiqarish
     dash_text, dash_kb = _build_user_dashboard(user_dict, _bot_username)
     await message.answer(dash_text, parse_mode="HTML", reply_markup=dash_kb)
-
-
 # ─────────────────────────────────────────────
 # GATEKEEPER OBUNA TEKSHIRISH CALLBACK
 # ─────────────────────────────────────────────
@@ -1629,6 +1644,74 @@ async def cb_admin_publish_winners(query: CallbackQuery, bot: Bot) -> None:
     await query.answer(f"✅ G'oliblar e'loni {posted} ta kanalga chiqarildi!", show_alert=True)
 
 
+async def update_promo_channel_posts(bot: Bot, code: str) -> None:
+    """Promokod ishlatilganda kanaldagi post statistikasini jonli yangilaydi."""
+    promo = await get_promo_by_code(code)
+    if not promo:
+        return
+        
+    chat_id = promo.get("post_chat_id", 0)
+    msg_id = promo.get("post_msg_id", 0)
+    html_text = promo.get("post_html")
+    
+    if not chat_id or not msg_id or not html_text:
+        return
+        
+    pts = promo.get("reward_points", 2)
+    p_type = promo.get("reward_type", "points")
+    max_uses = promo.get("max_uses", 50)
+    used_count = promo.get("used_count", 0)
+    
+    unit = "ta do'st" if p_type == "referrals" else "ball"
+    remain = max_uses - used_count
+    if remain < 0:
+        remain = 0
+        
+    stats_html = (
+        f"\n\n━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔑 <b>Promokod:</b> <code>{code}</code>\n"
+        f"🎁 <b>Yutuq:</b> +{pts} {unit}\n"
+        f"👥 <b>Limit:</b> {max_uses} ta odam\n"
+        f"⏳ <b>Qoldi:</b> {remain} ta\n"
+        f"✅ <b>Olingan:</b> {used_count} ta"
+    )
+    
+    full_html = html_text + stats_html
+    
+    bot_info = await bot.get_me()
+    deep_link = f"https://t.me/{bot_info.username}?start=promo_{code}"
+    
+    kb = None
+    if remain > 0:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🎉 Promokod olish", url=deep_link)]
+        ])
+    else:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Promokod tugadi", callback_data="none")]
+        ])
+        
+    try:
+        await bot.edit_message_caption(
+            chat_id=chat_id,
+            message_id=msg_id,
+            caption=full_html,
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+    except Exception:
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg_id,
+                text=full_html,
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+        except Exception as e:
+            logger.error("Promokod postini yangilashda xato: %s", e)
+
+
 # ── PROMOKOD YARATISH WIZARDI ──
 
 @router.callback_query(F.data == "admin:new_promo")
@@ -1719,9 +1802,9 @@ async def admin_promo_code_finish(message: Message, state: FSMContext) -> None:
     """Promokodni saqlash."""
     max_uses_str = message.text.strip() if message.text else "50"
     max_uses = int(max_uses_str) if max_uses_str.isdigit() else 50
-    data = await state.get_data()
-    await state.clear()
+    await state.update_data(promo_max_uses=max_uses)
 
+    data = await state.get_data()
     code = data.get("promo_code", "BONUS")
     p_type = data.get("promo_type", "points")
     pts = data.get("promo_points", 2)
@@ -1738,13 +1821,96 @@ async def admin_promo_code_finish(message: Message, state: FSMContext) -> None:
         f"🏷 <b>Turi:</b> {type_label}\n"
         f"🎁 <b>Mukofot:</b> +{pts} {unit}\n"
         f"👥 <b>Foydalanishlar limiti:</b> {max_uses} ta odam\n\n"
-        f"💡 <i>Ushbu promokodni kanaldagi postingizga yashirib qo'yishingiz mumkin!</i>"
+        f"💡 Ushbu promokodni <b>avtomatik knopkali post</b> qilib kanalga e'lon qilamizmi?"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Admin Menyu", callback_data="admin:menu")],
+        [InlineKeyboardButton(text="📢 Kanalga e'lon qilish", callback_data="admin:promo_post")],
+        [InlineKeyboardButton(text="⏭ O'tkazib yuborish (Faqat saqlash)", callback_data="admin:menu")],
     ])
     await message.reply(text, parse_mode="HTML", reply_markup=kb)
 
+@router.callback_query(F.data == "admin:promo_post")
+async def cb_admin_promo_post(query: CallbackQuery, state: FSMContext) -> None:
+    """Kanalni so'rash."""
+    await state.set_state(AdminStates.promo_post_channel)
+    text = (
+        "✍️ <b>Qaysi kanalga e'lon qilamiz?</b>\n\n"
+        "Kanalning username'ini (@bilan) yoki ID raqamini yuboring."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Bekor qilish", callback_data="admin:menu")],
+    ])
+    await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await query.answer()
+
+@router.message(AdminStates.promo_post_channel)
+async def admin_promo_post_channel(message: Message, state: FSMContext) -> None:
+    """Kanal qabul qilindi, post matnini so'rash."""
+    channel_id = message.text.strip() if message.text else ""
+    await state.update_data(promo_post_channel=channel_id)
+    await state.set_state(AdminStates.promo_post_text)
+    
+    text = (
+        "✍️ <b>Post matnini yuboring (Rasm/Video bilan yoki faqat matn).</b>\n\n"
+        "<i>Eslatma: Matnda xohlagancha Premium Emojilarni ishlatishingiz mumkin! Ular to'liq saqlanib qoladi.</i>\n\n"
+        "Post tagiga avtomatik tarzda statistika (qolgan odam soni) va '🎉 Promokod olish' knopkasi qo'shiladi."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Bekor qilish", callback_data="admin:menu")],
+    ])
+    await message.reply(text, parse_mode="HTML", reply_markup=kb)
+
+@router.message(AdminStates.promo_post_text)
+async def admin_promo_post_text(message: Message, bot: Bot, state: FSMContext) -> None:
+    """Postni kanalga yuborish va bazaga saqlash."""
+    data = await state.get_data()
+    code = data.get("promo_code")
+    p_type = data.get("promo_type", "points")
+    pts = data.get("promo_points", 2)
+    max_uses = data.get("promo_max_uses", 50)
+    channel_id = data.get("promo_post_channel")
+    
+    await state.clear()
+    
+    bot_info = await bot.get_me()
+    deep_link = f"https://t.me/{bot_info.username}?start=promo_{code}"
+    
+    type_label = "👥 Referal" if p_type == "referrals" else "⭐️ Ball"
+    unit = "ta do'st" if p_type == "referrals" else "ball"
+    
+    # Statistika bloki HTML shaklida
+    stats_html = (
+        f"\n\n━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔑 <b>Promokod:</b> <code>{code}</code>\n"
+        f"🎁 <b>Yutuq:</b> +{pts} {unit}\n"
+        f"👥 <b>Limit:</b> {max_uses} ta odam\n"
+        f"⏳ <b>Qoldi:</b> {max_uses} ta"
+    )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎉 Promokod olish", url=deep_link)]
+    ])
+    
+    try:
+        html_text = message.html_text or ""
+        full_html = html_text + stats_html
+        
+        # Postni kanalga jo'natish
+        sent_msg = None
+        if message.photo:
+            sent_msg = await bot.send_photo(chat_id=channel_id, photo=message.photo[-1].file_id, caption=full_html, parse_mode="HTML", reply_markup=kb)
+        elif message.video:
+            sent_msg = await bot.send_video(chat_id=channel_id, video=message.video.file_id, caption=full_html, parse_mode="HTML", reply_markup=kb)
+        else:
+            sent_msg = await bot.send_message(chat_id=channel_id, text=full_html, parse_mode="HTML", reply_markup=kb)
+            
+        # Bazaga saqlash
+        await update_promo_post_info(code=code, chat_id=sent_msg.chat.id, msg_id=sent_msg.message_id, html_text=html_text)
+        
+        await message.reply(f"✅ Post muvaffaqiyatli {channel_id} kanaliga joylandi va jonli rejimga o'tkazildi!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Bosh menyu", callback_data="admin:menu")]]))
+    except Exception as e:
+        logger.error(f"Promo post yuborishda xato: {e}")
+        await message.reply(f"❌ Kanalga yuborishda xatolik yuz berdi. Kanal ID to'g'riligini va bot kanalda admin ekanligini tekshiring.\nXato: {e}")
 
 # ── ADMIN TO'G'RIDAN-TO'G'RI REFERAL / BALL QO'SHISH ──
 

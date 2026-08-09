@@ -211,6 +211,14 @@ async def init_db() -> None:
         except Exception:
             pass
 
+        # Migration: promo_codes ga post ma'lumotlarini qo'shish
+        try:
+            await db.execute("ALTER TABLE promo_codes ADD COLUMN post_chat_id INTEGER DEFAULT 0")
+            await db.execute("ALTER TABLE promo_codes ADD COLUMN post_msg_id INTEGER DEFAULT 0")
+            await db.execute("ALTER TABLE promo_codes ADD COLUMN post_html TEXT DEFAULT NULL")
+        except Exception:
+            pass
+
         # Promokod ishlatganlar
         await db.execute("""
             CREATE TABLE IF NOT EXISTS promo_claims (
@@ -1027,6 +1035,28 @@ async def create_promo_code(
             logger.error("Promokod yaratishda xato: %s", e)
             return False
 
+
+async def update_promo_post_info(code: str, chat_id: int, msg_id: int, html_text: str) -> None:
+    """Promokod qaysi kanalga post qilinganini saqlash."""
+    clean_code = code.strip().upper()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE promo_codes
+            SET post_chat_id = ?, post_msg_id = ?, post_html = ?
+            WHERE code = ?
+            """,
+            (chat_id, msg_id, html_text, clean_code)
+        )
+        await db.commit()
+
+async def get_promo_by_code(code: str) -> dict | None:
+    clean_code = code.strip().upper()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM promo_codes WHERE code = ?", (clean_code,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
 
 async def claim_promo_code(user_id: int, code_str: str) -> tuple[bool, str, int, str]:
     """
