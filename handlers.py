@@ -346,6 +346,9 @@ async def cmd_start(message: Message, bot: Bot, state: FSMContext) -> None:
         await message.answer(bday_prompt, parse_mode="HTML", reply_markup=bday_kb)
         return
 
+        await message.answer(bday_prompt, parse_mode="HTML", reply_markup=bday_kb)
+        return
+
     # 7. Promokod olish uchun kirgan bo'lsa (Deep-link orqali)
     if payload.startswith("promo_"):
         code_str = payload.replace("promo_", "")
@@ -1844,73 +1847,28 @@ async def cb_admin_promo_post(query: CallbackQuery, state: FSMContext) -> None:
     await query.answer()
 
 @router.message(AdminStates.promo_post_channel)
-async def admin_promo_post_channel(message: Message, state: FSMContext) -> None:
-    """Kanal qabul qilindi, post matnini so'rash."""
+async def admin_promo_post_channel(message: Message, bot: Bot, state: FSMContext) -> None:
+    """Kanal qabul qilindi, postni zudlik bilan e'lon qilish."""
     channel_id = message.text.strip() if message.text else ""
-    await state.update_data(promo_post_channel=channel_id)
-    await state.set_state(AdminStates.promo_post_text)
     
-    text = (
-        "✍️ <b>Post matnini yuboring (Rasm/Video bilan yoki faqat matn).</b>\n\n"
-        "<i>Eslatma: Matnda xohlagancha Premium Emojilarni ishlatishingiz mumkin! Ular to'liq saqlanib qoladi.</i>\n\n"
-        "Post tagiga avtomatik tarzda statistika (qolgan odam soni) va '🎉 Promokod olish' knopkasi qo'shiladi."
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Bekor qilish", callback_data="admin:menu")],
-    ])
-    await message.reply(text, parse_mode="HTML", reply_markup=kb)
-
-@router.message(AdminStates.promo_post_text)
-async def admin_promo_post_text(message: Message, bot: Bot, state: FSMContext) -> None:
-    """Postni kanalga yuborish va bazaga saqlash."""
     data = await state.get_data()
     code = data.get("promo_code")
-    p_type = data.get("promo_type", "points")
-    pts = data.get("promo_points", 2)
-    max_uses = data.get("promo_max_uses", 50)
-    channel_id = data.get("promo_post_channel")
     
     await state.clear()
     
-    bot_info = await bot.get_me()
-    deep_link = f"https://t.me/{bot_info.username}?start=promo_{code}"
-    
-    type_label = "👥 Referal" if p_type == "referrals" else "⭐️ Ball"
-    unit = "ta do'st" if p_type == "referrals" else "ball"
-    
-    # Statistika bloki HTML shaklida
-    stats_html = (
-        f"\n\n━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔑 <b>Promokod:</b> <code>{code}</code>\n"
-        f"🎁 <b>Yutuq:</b> +{pts} {unit}\n"
-        f"👥 <b>Limit:</b> {max_uses} ta odam\n"
-        f"⏳ <b>Qoldi:</b> {max_uses} ta"
-    )
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎉 Promokod olish", url=deep_link)]
-    ])
+    html_text = f"🎉 <b>YANGI PROMOKOD TAYYOR!</b>"
     
     try:
-        html_text = message.html_text or ""
-        full_html = html_text + stats_html
-        
-        # Postni kanalga jo'natish
-        sent_msg = None
-        if message.photo:
-            sent_msg = await bot.send_photo(chat_id=channel_id, photo=message.photo[-1].file_id, caption=full_html, parse_mode="HTML", reply_markup=kb)
-        elif message.video:
-            sent_msg = await bot.send_video(chat_id=channel_id, video=message.video.file_id, caption=full_html, parse_mode="HTML", reply_markup=kb)
-        else:
-            sent_msg = await bot.send_message(chat_id=channel_id, text=full_html, parse_mode="HTML", reply_markup=kb)
-            
-        # Bazaga saqlash
+        sent_msg = await bot.send_message(chat_id=channel_id, text="Yuklanmoqda...", parse_mode="HTML")
         await update_promo_post_info(code=code, chat_id=sent_msg.chat.id, msg_id=sent_msg.message_id, html_text=html_text)
+        await update_promo_channel_posts(bot, code)
         
-        await message.reply(f"✅ Post muvaffaqiyatli {channel_id} kanaliga joylandi va jonli rejimga o'tkazildi!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Bosh menyu", callback_data="admin:menu")]]))
+        await message.reply(f"✅ Post muvaffaqiyatli {channel_id} kanaliga e'lon qilindi va jonli rejimga o'tkazildi!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Bosh menyu", callback_data="admin:menu")]]))
     except Exception as e:
         logger.error(f"Promo post yuborishda xato: {e}")
         await message.reply(f"❌ Kanalga yuborishda xatolik yuz berdi. Kanal ID to'g'riligini va bot kanalda admin ekanligini tekshiring.\nXato: {e}")
+
+
 
 # ── ADMIN TO'G'RIDAN-TO'G'RI REFERAL / BALL QO'SHISH ──
 
