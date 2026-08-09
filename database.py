@@ -59,6 +59,18 @@ async def init_db() -> None:
             )
         """)
 
+        # Guruh a'zolari (Tag All funksiyasi uchun)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS group_members (
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                username TEXT,
+                first_name TEXT NOT NULL,
+                last_active DATETIME DEFAULT (datetime('now')),
+                PRIMARY KEY (chat_id, user_id)
+            )
+        """)
+
         # 777 o'yini g'oliblari
         await db.execute("""
             CREATE TABLE IF NOT EXISTS game_winners (
@@ -1200,7 +1212,35 @@ async def get_weekly_top_referrers(limit: int = 10) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-# ── GURUHDAGI FAOLLIK (CHAT MINING) ──
+# ── GURUH FAOLLIGI VA "TAG ALL" TIZIMI ──
+
+async def update_group_member(chat_id: int, user_id: int, first_name: str, username: str = None) -> None:
+    """Guruh foydalanuvchilarini ro'yxatga olish (yoki oxirgi faolligini yangilash)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO group_members (chat_id, user_id, first_name, username, last_active)
+            VALUES (?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(chat_id, user_id) DO UPDATE SET 
+                first_name = excluded.first_name,
+                username = excluded.username,
+                last_active = datetime('now')
+        """, (chat_id, user_id, first_name, username))
+        await db.commit()
+
+
+async def get_group_members(chat_id: int) -> list[dict]:
+    """Berilgan guruhning barcha a'zolarini qaytaradi (Tag All uchun)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("""
+            SELECT user_id, first_name, username 
+            FROM group_members 
+            WHERE chat_id = ?
+            ORDER BY last_active DESC
+        """, (chat_id,))
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
 
 async def record_group_chat_activity(user_id: int, chat_id: int) -> tuple[bool, int, int]:
     """
