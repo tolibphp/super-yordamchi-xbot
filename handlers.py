@@ -55,6 +55,8 @@ from database import (
     claim_daily_post_reward,
     create_promo_code,
     claim_promo_code,
+    update_promo_post_info,
+    get_promo_by_code,
     find_user_by_id_or_username,
     manual_add_user_referrals,
     manual_add_user_points,
@@ -1833,27 +1835,17 @@ async def admin_promo_code_finish(message: Message, state: FSMContext) -> None:
     await message.reply(text, parse_mode="HTML", reply_markup=kb)
 
 @router.callback_query(F.data == "admin:promo_post")
-async def cb_admin_promo_post(query: CallbackQuery, state: FSMContext) -> None:
-    """Kanalni so'rash."""
-    await state.set_state(AdminStates.promo_post_channel)
-    text = (
-        "✍️ <b>Qaysi kanalga e'lon qilamiz?</b>\n\n"
-        "Kanalning username'ini (@bilan) yoki ID raqamini yuboring."
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Bekor qilish", callback_data="admin:menu")],
-    ])
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-    await query.answer()
-
-@router.message(AdminStates.promo_post_channel)
-async def admin_promo_post_channel(message: Message, bot: Bot, state: FSMContext) -> None:
-    """Kanal qabul qilindi, postni zudlik bilan e'lon qilish."""
-    channel_id = message.text.strip() if message.text else ""
-    
+async def cb_admin_promo_post(query: CallbackQuery, bot: Bot, state: FSMContext) -> None:
+    """Kanalni avtomatik topib zudlik bilan e'lon qilish."""
     data = await state.get_data()
     code = data.get("promo_code")
     
+    channels = await get_mandatory_channels()
+    if not channels:
+        await query.answer("❌ Kanal topilmadi! Iltimos, admin panel orqali kanal ulang.", show_alert=True)
+        return
+        
+    channel_id = channels[0]["chat_id"]
     await state.clear()
     
     html_text = f"🎉 <b>YANGI PROMOKOD TAYYOR!</b>"
@@ -1863,10 +1855,12 @@ async def admin_promo_post_channel(message: Message, bot: Bot, state: FSMContext
         await update_promo_post_info(code=code, chat_id=sent_msg.chat.id, msg_id=sent_msg.message_id, html_text=html_text)
         await update_promo_channel_posts(bot, code)
         
-        await message.reply(f"✅ Post muvaffaqiyatli {channel_id} kanaliga e'lon qilindi va jonli rejimga o'tkazildi!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Bosh menyu", callback_data="admin:menu")]]))
+        if query.message:
+            await query.message.edit_text(f"✅ Post muvaffaqiyatli kanalingizga e'lon qilindi va jonli rejimga o'tkazildi!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Bosh menyu", callback_data="admin:menu")]]))
+        await query.answer("Kanalga post qilindi!")
     except Exception as e:
         logger.error(f"Promo post yuborishda xato: {e}")
-        await message.reply(f"❌ Kanalga yuborishda xatolik yuz berdi. Kanal ID to'g'riligini va bot kanalda admin ekanligini tekshiring.\nXato: {e}")
+        await query.answer(f"❌ Kanalga yuborishda xatolik yuz berdi. Bot kanalda admin ekanligini tekshiring.", show_alert=True)
 
 
 
