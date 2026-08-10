@@ -10,6 +10,8 @@ from datetime import datetime
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.types import FSInputFile
+import os
 
 from config import BOT_TOKEN, ADMIN_ID, get_uzb_now
 from database import init_db
@@ -61,6 +63,27 @@ async def daily_birthday_scheduler(bot: Bot) -> None:
                 scheduler_logger.info("Guruhlarga kunlik tug'ilgan kun xabarnomasi yuborilmoqda (%s)", today_str)
                 await broadcast_daily_birthdays(bot, bot_uname)
                 last_sent_date = today_str
+                
+            # Avtomatik Baza Zaxirasi (Har kuni soat 23:55 da adminga tashlaydi)
+            auto_backup_key = f"backup_{today_str}"
+            if now_uzb.hour == 23 and now_uzb.minute >= 55 and auto_backup_key not in last_sent_date:
+                scheduler_logger.info("Adminga avtomatik baza zaxirasi yuborilmoqda...")
+                db_path = "data/bot.db"
+                if os.path.exists(db_path) and ADMIN_ID:
+                    try:
+                        file = FSInputFile(db_path, filename=f"auto_backup_{today_str}.db")
+                        await bot.send_document(
+                            chat_id=ADMIN_ID,
+                            document=file,
+                            caption=f"🛡 <b>Avtomatik Baza Zaxirasi</b> ({today_str})\n\n"
+                                    f"Bu botingizning kunlik avtomatik saqlangan bazasi. "
+                                    f"Agar baza o'chib ketsa, shu faylni botga yuborsangiz o'rnatib olaman.",
+                            parse_mode="HTML"
+                        )
+                        # Avoid triggering again today by saving the key in last_sent_date or just adding to it
+                        last_sent_date += auto_backup_key
+                    except Exception as e:
+                        scheduler_logger.error(f"Avtomatik backup yuborishda xato: {e}")
 
             await asyncio.sleep(45)
         except asyncio.CancelledError:

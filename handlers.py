@@ -15,7 +15,9 @@ from aiogram.types import (
     ChatMemberUpdated,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    FSInputFile,
 )
+import os
 from aiogram.filters import (
     Command,
     CommandStart,
@@ -2831,3 +2833,60 @@ async def on_group_message(message: Message, bot: Bot) -> None:
     except Exception as e:
         logger.warning("Chat mining xatosi: %s", e)
 
+
+# ── BAZA ZAXIRASI VA TIKLASH (BACKUP / RESTORE) ──
+
+@router.message(Command("backup"))
+async def cmd_admin_backup(message: Message, bot: Bot) -> None:
+    """Admin uchun bazani yuklab olish komandasi."""
+    if not ADMIN_ID or not message.from_user or message.from_user.id != ADMIN_ID:
+        return
+        
+    db_path = "data/bot.db"
+    if not os.path.exists(db_path):
+        await message.reply("❌ Baza topilmadi (data/bot.db yo'q).")
+        return
+        
+    try:
+        file = FSInputFile(db_path, filename="bot_backup.db")
+        await bot.send_document(
+            chat_id=ADMIN_ID,
+            document=file,
+            caption="📂 <b>Mana sizning bot bazangiz zaxirasi!</b>\n\n"
+                    "Agar mabodo xotira o'chib ketsa, aynan mana shu faylni "
+                    "botga yuboring. Men uni qayta o'rnataman.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"Backup yuborishda xato: {e}")
+        await message.reply(f"❌ Xatolik yuz berdi: {e}")
+
+@router.message(F.document)
+async def admin_restore_db(message: Message, bot: Bot) -> None:
+    """Admin .db faylini yuborganda bazani tiklash."""
+    if not ADMIN_ID or not message.from_user or message.from_user.id != ADMIN_ID:
+        return
+        
+    if not message.document or not message.document.file_name:
+        return
+        
+    if message.document.file_name.endswith(".db"):
+        db_path = "data/bot.db"
+        try:
+            # Faylni yuklab olish
+            file_id = message.document.file_id
+            file = await bot.get_file(file_id)
+            file_path = file.file_path
+            
+            # Bazani almashtirish
+            await bot.download_file(file_path, destination=db_path)
+            
+            await message.reply(
+                "✅ <b>Baza muvaffaqiyatli tiklandi!</b>\n\n"
+                "Endi barcha ma'lumotlar, referallar va foydalanuvchilar o'z joyida.\n"
+                "Iltimos, bot to'g'ri ishlashi uchun serveringizni (app) bitta restart qilib yuboring!",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"Baza tiklashda xato: {e}")
+            await message.reply(f"❌ Bazani tiklashda xatolik: {e}")
