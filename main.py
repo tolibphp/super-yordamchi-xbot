@@ -14,7 +14,7 @@ from aiogram.types import FSInputFile
 import os
 
 from config import BOT_TOKEN, ADMIN_ID, get_uzb_now
-from database import init_db
+from database import init_db, DB_PATH
 from handlers import router, set_bot_username
 from birthday import broadcast_daily_birthdays
 
@@ -68,7 +68,7 @@ async def daily_birthday_scheduler(bot: Bot) -> None:
             auto_backup_key = f"backup_{today_str}"
             if now_uzb.hour == 23 and now_uzb.minute >= 55 and auto_backup_key not in last_sent_date:
                 scheduler_logger.info("Adminga avtomatik baza zaxirasi yuborilmoqda...")
-                db_path = "data/bot.db"
+                db_path = DB_PATH
                 if os.path.exists(db_path) and ADMIN_ID:
                     try:
                         file = FSInputFile(db_path, filename=f"auto_backup_{today_str}.db")

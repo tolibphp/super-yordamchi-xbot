@@ -34,6 +34,7 @@ from aiogram.fsm.context import FSMContext
 
 from config import ADMIN_ID
 from database import (
+    DB_PATH,
     log_activity,
     get_top_users,
     add_linked_chat,
@@ -2842,9 +2843,9 @@ async def cmd_admin_backup(message: Message, bot: Bot) -> None:
     if not ADMIN_ID or not message.from_user or message.from_user.id != ADMIN_ID:
         return
         
-    db_path = "data/bot.db"
+    db_path = DB_PATH
     if not os.path.exists(db_path):
-        await message.reply("❌ Baza topilmadi (data/bot.db yo'q).")
+        await message.reply(f"❌ Baza topilmadi ({db_path} yo'q).")
         return
         
     try:
@@ -2871,7 +2872,7 @@ async def admin_restore_db(message: Message, bot: Bot) -> None:
         return
         
     if message.document.file_name.endswith(".db"):
-        db_path = "data/bot.db"
+        db_path = DB_PATH
         try:
             # Faylni yuklab olish
             file_id = message.document.file_id
