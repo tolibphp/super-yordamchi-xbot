@@ -2945,6 +2945,29 @@ async def handle_join_request(update: ChatJoinRequest, bot: Bot) -> None:
     
     try:
         await bot.send_message(user_id, text, parse_mode="HTML", reply_markup=kb)
+        
+        # Guruhga ham xabar yuborish va avtomatik o'chirish (60s)
+        try:
+            me = await bot.get_me()
+            bot_username = me.username
+            name = update.from_user.first_name or "Do'stim"
+            user_mention = f"<a href='tg://user?id={user_id}'>{html.escape(name)}</a>"
+            group_text = f"👋 Salom {user_mention}, guruhga qo'shilish uchun bot orqali shaxsingizni tasdiqlang!"
+            group_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅ Tasdiqlash", url=f"https://t.me/{bot_username}")
+            ]])
+            msg = await bot.send_message(chat_id, group_text, parse_mode="HTML", reply_markup=group_kb)
+            
+            async def delete_later(m, delay):
+                await asyncio.sleep(delay)
+                try:
+                    await m.delete()
+                except:
+                    pass
+            asyncio.create_task(delete_later(msg, 60))
+        except Exception as e:
+            logger.warning(f"Guruhga tasdiqlash xabarini yuborishda xato: {e}")
+            
     except Exception as e:
         logger.warning(f"Captcha yuborishda xato (Foydalanuvchi botni bloklagan bo'lishi mumkin): {e}")
         # Agar lichkaga yoza olmasak, rad etamiz
