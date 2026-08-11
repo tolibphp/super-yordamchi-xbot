@@ -13,11 +13,13 @@ from aiogram.types import (
     CallbackQuery,
     MessageReactionUpdated,
     ChatMemberUpdated,
+    ChatJoinRequest,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     FSInputFile,
 )
 import os
+import random
 from aiogram.filters import (
     Command,
     CommandStart,
@@ -143,6 +145,15 @@ async def set_bot_username(bot: Bot) -> None:
 # FOYDALANUVCHI INTERFEYSI VA MENYULAR
 # ─────────────────────────────────────────────
 
+def _get_progress_bar(current: int, target: int = 50, length: int = 10) -> str:
+    """Vizual progress bar yaratadi."""
+    if target <= 0:
+        target = 1
+    pct = min(current / target, 1.0)
+    filled = int(pct * length)
+    empty = length - filled
+    return "█" * filled + "░" * empty
+
 def _build_user_dashboard(user: dict, bot_user_name: str) -> tuple[str, InlineKeyboardMarkup]:
     """Foydalanuvchi asosiy boshqaruv kabineti matni va tugmalari."""
     name = html.escape(user.get("first_name", "Do'stim"))
@@ -154,8 +165,10 @@ def _build_user_dashboard(user: dict, bot_user_name: str) -> tuple[str, InlineKe
     text = (
         f"👋 <b>Xush kelibsiz, {name}!</b>{vip_badge}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 <b>Sizning balingiz:</b> <code>{points}</code> ball\n"
-        f"👥 <b>Faol referallaringiz:</b> <code>{refs}</code> ta do'st\n"
+        f"📊 <b>Balingiz:</b> <code>{points}</code> ball\n"
+        f"👥 <b>Do'stlar:</b> <code>{refs}</code> ta\n"
+        f"🎯 <b>Konkurs Progressi:</b>\n"
+        f"[{_get_progress_bar(refs, 50)}] {refs}/50\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🔥 <b>Qanday qilib ball to'plash mumkin?</b>\n"
         f"1️⃣ «🚀 Do'stlarga Ulashish» orqali do'stlaringizni taklif qiling (+1 ball)\n"
@@ -618,9 +631,11 @@ async def cb_user_profile(query: CallbackQuery, bot: Bot) -> None:
         f"💰 <b>Jami ballar:</b> <b>{pts}</b> ball\n"
         f"👥 <b>Chaqirilgan do'stlar:</b> <b>{refs}</b> ta\n"
         f"🎁 <b>Olingan bonuslar:</b> <b>{bonus}</b> ball\n\n"
-        f"🏆 <b>KONKURSLARGA STATUSINGIZ:</b>\n"
-        f"🎁 <b>Gift Konkurs (min 30 ref):</b> {gift_status}\n"
-        f"💎 <b>Premium Konkurs (min 50 ref):</b> {prem_status}\n\n"
+        f"🏆 <b>KONKURSLARGA TAYYORGARLIK:</b>\n"
+        f"🎁 <b>Gift (30 ref):</b>\n[{_get_progress_bar(refs, 30)}] {refs}/30\n"
+        f"{gift_status}\n\n"
+        f"💎 <b>Premium (50 ref):</b>\n[{_get_progress_bar(refs, 50)}] {refs}/50\n"
+        f"{prem_status}\n\n"
         f"🔗 <b>Sizning taklif havolangiz:</b>\n<code>{ref_link}</code>"
     )
 
@@ -2891,3 +2906,83 @@ async def admin_restore_db(message: Message, bot: Bot) -> None:
         except Exception as e:
             logger.error(f"Baza tiklashda xato: {e}")
             await message.reply(f"❌ Bazani tiklashda xatolik: {e}")
+
+
+# ── GURUHGA QO'SHILISH VA CAPTCHA (ANTI-BOT) ──
+
+@router.chat_join_request()
+async def handle_join_request(update: ChatJoinRequest, bot: Bot) -> None:
+    """Guruhga qo'shilish so'rovini ushlash va lichkaga Captcha yuborish."""
+    chat_id = update.chat.id
+    user_id = update.from_user.id
+    
+    # Emojilar ro'yxati
+    emojis = ['🍎', '🍌', '🍓', '🍇', '🍉', '🍍', '🥝', '🍒']
+    correct_emoji = random.choice(emojis)
+    
+    # 4 ta random emoji tanlaymiz (ichida correct bo'lishi kerak)
+    options = random.sample([e for e in emojis if e != correct_emoji], 3)
+    options.append(correct_emoji)
+    random.shuffle(options)
+    
+    # Inline knopkalarni yaratamiz
+    buttons = []
+    for emoji in options:
+        # captcha:chat_id:is_correct
+        is_correct = "1" if emoji == correct_emoji else "0"
+        cb_data = f"captcha:{chat_id}:{is_correct}"
+        buttons.append(InlineKeyboardButton(text=emoji, callback_data=cb_data))
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[buttons])
+    
+    chat_name = update.chat.title or "guruh"
+    text = (
+        f"🛡 <b>Anti-Bot Himoyasi!</b>\n\n"
+        f"Salom, siz <b>{chat_name}</b> guruhiga qo'shilish so'rovini yubordingiz.\n"
+        f"Guruhni spam va botlardan himoya qilish maqsadida, iltimos pastdagi knopkalardan quyidagi mevani tanlang:\n\n"
+        f"👉 <b>{correct_emoji}</b> 👈"
+    )
+    
+    try:
+        await bot.send_message(user_id, text, parse_mode="HTML", reply_markup=kb)
+    except Exception as e:
+        logger.warning(f"Captcha yuborishda xato (Foydalanuvchi botni bloklagan bo'lishi mumkin): {e}")
+        # Agar lichkaga yoza olmasak, rad etamiz
+        try:
+            await bot.decline_chat_join_request(chat_id, user_id)
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data.startswith("captcha:"))
+async def process_captcha(query: CallbackQuery, bot: Bot) -> None:
+    """Foydalanuvchi Captcha knopkasini bosganda qayta ishlash."""
+    _, chat_id_str, is_correct = query.data.split(":")
+    chat_id = int(chat_id_str)
+    user_id = query.from_user.id
+    
+    if is_correct == "1":
+        # To'g'ri topdi
+        try:
+            await bot.approve_chat_join_request(chat_id, user_id)
+            await query.message.edit_text(
+                "✅ <b>Qabul qilindingiz!</b>\n\n"
+                "Siz muvaffaqiyatli tekshiruvdan o'tdingiz va guruhga qabul qilindingiz. Marhamat, guruhga qaytishingiz mumkin!",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"Approve qilishda xato: {e}")
+            await query.answer("❌ Xatolik yuz berdi. Iltimos qayta urinib ko'ring.", show_alert=True)
+    else:
+        # Xato topdi
+        try:
+            await bot.decline_chat_join_request(chat_id, user_id)
+            await query.message.edit_text(
+                "❌ <b>Xato!</b>\n\n"
+                "Siz noto'g'ri tanlov qildingiz. Guruhga qo'shilish so'rovi rad etildi.",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"Decline qilishda xato: {e}")
+            await query.answer("❌ Xatolik yuz berdi.", show_alert=True)
+
