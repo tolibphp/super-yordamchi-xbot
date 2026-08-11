@@ -143,6 +143,7 @@ async def main() -> None:
                 "message_reaction",
                 "chat_member",
                 "my_chat_member",
+                "chat_join_request",
             ],
             drop_pending_updates=True,
         )
