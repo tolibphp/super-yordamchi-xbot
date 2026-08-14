@@ -1480,9 +1480,11 @@ async def get_contest_participants(contest_id: int) -> list[dict]:
                 u.username,
                 u.first_name,
                 u.points,
-                u.referral_count
+                u.referral_count,
+                IFNULL(cs.extra_tickets, 0) as extra_tickets
             FROM contest_participants p
             JOIN bot_users u ON p.user_id = u.user_id
+            LEFT JOIN comment_streaks cs ON p.user_id = cs.user_id
             WHERE p.contest_id = ?
             ORDER BY p.ticket_number ASC
             """,
@@ -1502,6 +1504,8 @@ async def end_contest(contest_id: int, winners_data: list[dict] | dict | None = 
             (w_json, contest_id),
         )
         await db.commit()
+    
+    await reset_all_comment_tickets()
     return True
 
 
@@ -1821,4 +1825,90 @@ async def reset_weekly_leaderboard() -> None:
     """Haftalik reytingni noldan boshlash (weekly_refs ni 0 qilish)."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE bot_users SET weekly_refs = 0")
+        await db.commit()
+
+
+# ── TOLIBJON TOP STREAK LOGIC ──
+
+async def process_tolibjon_comment(user_id: int, post_id: int) -> dict:
+    """
+    Foydalanuvchining 'Tolibjon Top' kamentini post bazasida hisoblaydi.
+    Qaytaradi dict status bilan.
+    """
+    import datetime
+    
+    def _get_uzb_today() -> datetime.date:
+        return (datetime.datetime.utcnow() + datetime.timedelta(hours=5)).date()
+        
+    today = _get_uzb_today()
+    today_str = today.isoformat()
+
+    async with aiosqlite.connect("bot_database.db") as db:
+        db.row_factory = aiosqlite.Row
+        
+        # 1. Bitta postga 1 marta yoza olishini tekshiramiz
+        try:
+            await db.execute(
+                "INSERT INTO tolibjon_post_logs (user_id, post_id, created_at) VALUES (?, ?, ?)",
+                (user_id, post_id, today_str)
+            )
+        except aiosqlite.IntegrityError:
+            # Allaqachon yozgan bu postga
+            return {"status": "already_commented_on_post"}
+            
+        # 2. Streak tekshiruvi
+        cursor = await db.execute("SELECT * FROM comment_streaks WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        
+        if not row:
+            await db.execute(
+                "INSERT INTO comment_streaks (user_id, streak_days, last_comment_date, daily_count, extra_tickets) VALUES (?, 1, ?, 1, 0)",
+                (user_id, today_str)
+            )
+            await db.commit()
+            return {"status": "first_comment_today", "streak": 1, "points_added": 0}
+            
+        last_date = row["last_comment_date"]
+        streak_days = row["streak_days"]
+        extra_tickets = row["extra_tickets"]
+        
+        if last_date == today_str:
+            # Bugun boshqa postda yozgan, shuning uchun bu post uchun +5 ball
+            await db.execute("UPDATE bot_users SET points = points + 5 WHERE user_id = ?", (user_id,))
+            await db.commit()
+            return {"status": "extra_points", "points_added": 5, "streak": streak_days}
+            
+        # Kecha yoki oldinroq yozgan
+        if last_date:
+            last_date_obj = datetime.date.fromisoformat(last_date)
+            missed_days = (today - last_date_obj).days - 1
+            if missed_days > 0:
+                streak_days = max(0, streak_days - missed_days)
+        
+        streak_days += 1
+        
+        if streak_days >= 15:
+            extra_tickets += 1
+            streak_days = 0
+            res_status = "ticket_earned"
+        else:
+            res_status = "first_comment_today"
+            
+        await db.execute(
+            "UPDATE comment_streaks SET streak_days = ?, last_comment_date = ?, daily_count = 1, extra_tickets = ? WHERE user_id = ?",
+            (streak_days, today_str, extra_tickets, user_id)
+        )
+        await db.commit()
+        return {"status": res_status, "streak": streak_days, "points_added": 0}
+
+async def get_user_extra_tickets(user_id: int) -> int:
+    async with aiosqlite.connect("bot_database.db") as db:
+        cursor = await db.execute("SELECT extra_tickets FROM comment_streaks WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+async def reset_all_comment_tickets() -> None:
+    """Konkurs yakunlangach barcha chiptalar va streaklarni nollaydi"""
+    async with aiosqlite.connect("bot_database.db") as db:
+        await db.execute("UPDATE comment_streaks SET extra_tickets = 0, streak_days = 0")
         await db.commit()

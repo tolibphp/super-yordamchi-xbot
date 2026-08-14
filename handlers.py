@@ -2979,18 +2979,24 @@ async def on_group_message(message: Message, bot: Bot) -> None:
 
     # 3. Faollikni bazaga yozish (faqat kanal posti kommenti bo'lsa)
     is_channel_post_comment = False
+    post_id = 0
     if message.reply_to_message:
         reply = message.reply_to_message
         if reply.is_automatic_forward:
             is_channel_post_comment = True
+            post_id = reply.message_id
         elif reply.sender_chat and reply.sender_chat.type == ChatType.CHANNEL:
             is_channel_post_comment = True
+            post_id = reply.message_id
         elif reply.forward_from_chat and reply.forward_from_chat.type == ChatType.CHANNEL:
             is_channel_post_comment = True
+            post_id = reply.message_id
         elif message.message_thread_id is not None:
             is_channel_post_comment = True
+            post_id = message.message_thread_id
     elif message.message_thread_id is not None:
         is_channel_post_comment = True
+        post_id = message.message_thread_id
 
     if is_channel_post_comment:
         await log_activity(
@@ -3001,6 +3007,27 @@ async def on_group_message(message: Message, bot: Bot) -> None:
             message_id=message.message_id,
             chat_id=message.chat.id,
         )
+
+        # Tolibjon Top logikasi
+        if message.text:
+            m_text = message.text.strip()
+            if m_text.startswith("T") and m_text.lower() == "tolibjon top":
+                from database import process_tolibjon_comment
+                res = await process_tolibjon_comment(message.from_user.id, post_id)
+                
+                user_msg = ""
+                if res["status"] == "first_comment_today":
+                    user_msg = f"✅ Muvaffaqiyatli! 'Tolibjon Top' kamentingiz qabul qilindi.\n🎫 Konkurs uchun qo'shimcha chiptaga: {res['streak']}/15 kun."
+                elif res["status"] == "ticket_earned":
+                    user_msg = "🎉 Tabriklaymiz! Siz 15 kun davomida to'xtovsiz kament yozdingiz va konkurs uchun qo'shimcha 1 ta chiptani qo'lga kiritdingiz! Sizning ismingiz yutuq o'yinida yana +1 marta ko'proq aylanadi!"
+                elif res["status"] == "extra_points":
+                    user_msg = f"✅ Kament qabul qilindi va sizga qo'shimcha +{res['points_added']} ball berildi!"
+                
+                if user_msg:
+                    try:
+                        await bot.send_message(message.from_user.id, user_msg)
+                    except Exception:
+                        pass
 
     # 4. Guruh faolligi (Chat Mining: har 15 ta xabarda +1 ball)
     try:

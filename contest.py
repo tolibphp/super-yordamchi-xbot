@@ -334,7 +334,18 @@ async def draw_contest_winners(
         remaining = [p for p in participants if p["user_id"] != top_winner["user_id"]]
         needed_random = actual_count - 1
         if needed_random > 0 and remaining:
-            selected_randoms = random.sample(remaining, min(len(remaining), needed_random))
+            pool = []
+            for p in remaining:
+                t = 1 + p.get("extra_tickets", 0)
+                for _ in range(t):
+                    pool.append(p)
+            
+            selected_randoms = []
+            while len(selected_randoms) < min(len(remaining), needed_random) and pool:
+                chosen = random.choice(pool)
+                selected_randoms.append(chosen)
+                pool = [x for x in pool if x["user_id"] != chosen["user_id"]]
+
             for rw in selected_randoms:
                 winners_list.append({
                     "user_id": rw["user_id"],
@@ -345,7 +356,18 @@ async def draw_contest_winners(
                 })
     else:
         # Tezkor / Oddiy konkurs bo'lsa: Barcha g'oliblar tasodifiy (Random) aniqlanadi
-        selected_participants = random.sample(participants, actual_count)
+        pool = []
+        for p in participants:
+            t = 1 + p.get("extra_tickets", 0)
+            for _ in range(t):
+                pool.append(p)
+                
+        selected_participants = []
+        while len(selected_participants) < actual_count and pool:
+            chosen = random.choice(pool)
+            selected_participants.append(chosen)
+            pool = [x for x in pool if x["user_id"] != chosen["user_id"]]
+
         for sp in selected_participants:
             winners_list.append({
                 "user_id": sp["user_id"],
