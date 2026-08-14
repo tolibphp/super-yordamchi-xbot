@@ -788,27 +788,46 @@ async def cmd_user_birthday(message: Message, state: FSMContext) -> None:
 @router.message(F.text == "🎁 Konkurslar")
 @router.message(F.text == "🎁 Faol Konkurslar")
 async def cb_user_contests(message: Message) -> None:
-    """Faol konkurslar ro'yxati."""
-    contests = await get_all_contests(status="active")
+    """Faol konkurslar ro'yxati va ularga qatnashish imkoniyati."""
+    contests = await get_active_contests()
+    user = await get_user_profile(message.from_user.id)
+    user_refs = user.get("referral_count", 0) if user else 0
+
     if not contests:
-        await message.answer("😔 Hozircha faol konkurslar yo'q.", reply_markup=get_contests_keyboard())
+        text = (
+            "🎁 <b>FAOL KONKURSLAR</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "⚠️ Hozirda faol konkurslar mavjud emas.\n"
+            "Tez orada yangi qimmatbaho konkurslar e'lon qilinadi! Kanalimizni kuzatib boring."
+        )
+        await message.answer(text, parse_mode="HTML", reply_markup=get_contests_keyboard())
         return
 
-    lines = ["🎁 <b>FAOL KONKURSLAR RO'YXATI</b>\n"]
+    lines = [
+        "🎁 <b>HOZIRGI FAOL KONKURSLAR</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n",
+        f"📊 Sizning hozirgi referallaringiz: <b>{user_refs} ta</b>\n",
+    ]
+
     buttons = []
-    
     for c in contests:
-        c_id = c["id"]
-        c_type = c["type"]
-        c_prize = c["prize"]
-        c_ends = c["end_time"]
-        
+        c_type = c.get("contest_type", "gift")
         badge = "💎 Telegram Premium" if c_type == "premium" else ("🎁 Telegram Gift" if c_type == "gift" else "🎯 Maxsus")
-        lines.append(f"🔸 <b>{badge}</b> (ID: {c_id})")
-        lines.append(f"   Sovg'a: {c_prize}")
-        lines.append(f"   Tugaydi: {c_ends}\n")
-        
-        buttons.append([InlineKeyboardButton(text=f"👉 Konkurs #{c_id} da qatnashish", callback_data=f"user:join:{c_id}")])
+        min_r = c.get("min_referrals", 0)
+        title = c.get("title", f"Konkurs #{c['id']}")
+        prize = c.get("prize_description", "Sovg'alar")
+
+        lines.append(f"🏆 <b>{title}</b> ({badge})")
+        lines.append(f"🎁 <b>Sovg'a:</b> {prize}")
+        lines.append(f"📌 <b>Talab:</b> Kamida <b>{min_r} ta</b> faol referal")
+        lines.append("──────────────────────")
+
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"🎁 Qatnashish: {title[:20]}",
+                callback_data=f"user:join:{c['id']}",
+            )
+        ])
 
     inline_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=inline_kb)
@@ -828,21 +847,26 @@ async def cmd_group_birthdays(message: Message, bot: Bot) -> None:
 
 @router.message(F.text == "⚡ Bugungi post (+1 ball)")
 async def cb_user_daily_post(message: Message, bot: Bot) -> None:
-    """Bugungi kun posti (reaksiya uchun)."""
-    url = await get_setting("daily_post_url")
-    if not url:
-        await message.answer("😔 Bugungi post hozircha belgilanmagan. Keyinroq urinib ko'ring.", reply_markup=get_others_keyboard())
-        return
+    """Kunlik post o'qish uchun +1 ball olish."""
+    user_id = message.from_user.id
+    success, msg = await claim_daily_post_reward(user_id)
+    daily_url = await get_bot_setting("daily_post_url", "")
 
-    text = (
-        "⚡ <b>BUGUNGI POST</b>\n\n"
-        "Quyidagi postni ko'ring va unga reaksiya bildiring. "
-        "Ushbu post orqali ball to'plashingiz yoki yashirin promokod topishingiz mumkin!"
-    )
-    inline_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👀 Postni ko'rish", url=url)],
-    ])
-    await message.answer(text, parse_mode="HTML", reply_markup=inline_kb)
+    lines = [
+        "⚡ <b>KUNLIK POST MUKOFOSTI</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n",
+        msg,
+    ]
+
+    buttons = []
+    if daily_url:
+        buttons.append([InlineKeyboardButton(text="📢 Bugungi Postni Ko'rish", url=daily_url)])
+
+    if buttons:
+        inline_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=inline_kb)
+    else:
+        await message.answer("\n".join(lines), parse_mode="HTML")
 
 
 @router.message(F.text == "🔑 Promokod kiritish")
