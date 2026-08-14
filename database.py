@@ -1843,7 +1843,7 @@ async def process_tolibjon_comment(user_id: int, post_id: int) -> dict:
     today = _get_uzb_today()
     today_str = today.isoformat()
 
-    async with aiosqlite.connect("bot_database.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         
         # 1. Bitta postga 1 marta yoza olishini tekshiramiz
@@ -1902,13 +1902,13 @@ async def process_tolibjon_comment(user_id: int, post_id: int) -> dict:
         return {"status": res_status, "streak": streak_days, "points_added": 0}
 
 async def get_user_extra_tickets(user_id: int) -> int:
-    async with aiosqlite.connect("bot_database.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT extra_tickets FROM comment_streaks WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
         return row[0] if row else 0
 
 async def reset_all_comment_tickets() -> None:
     """Konkurs yakunlangach barcha chiptalar va streaklarni nollaydi"""
-    async with aiosqlite.connect("bot_database.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE comment_streaks SET extra_tickets = 0, streak_days = 0")
         await db.commit()
