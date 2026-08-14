@@ -937,22 +937,23 @@ async def process_promo_input(message: Message, state: FSMContext, bot: Bot) -> 
     if not message.text or not message.from_user:
         return
 
-    code = message.text.strip().lower()
-    if code in ["bekor qilish", "/cancel", "🔙 asosiy menyu", "🔙 orqaga", "🔑 promokod kiritish"]:
+    code_text = message.text.strip()
+    code_lower = code_text.lower()
+    if code_lower in ["bekor qilish", "/cancel", "🔙 asosiy menyu", "🔙 orqaga", "🔑 promokod kiritish", "🏆 reytinglar", "ℹ️ qo'llanma"]:
         await state.clear()
         await message.reply("❌ Promokod kiritish bekor qilindi.", reply_markup=get_main_keyboard())
         return
 
     user_id = message.from_user.id
-    success, msg = await use_promo_code(user_id, code)
-
-    lines = [
-        "🔑 <b>PROMOKOD NATIJASI</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n",
-        msg,
-    ]
+    success, msg, pts, reward_type = await claim_promo_code(user_id, code_text)
     await state.clear()
-    await message.reply("\n".join(lines), parse_mode="HTML", reply_markup=get_main_keyboard())
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👤 Profilim", callback_data="user:profile")],
+        [InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")],
+    ])
+
+    await message.reply(f"{msg}", parse_mode="HTML", reply_markup=kb)
 
 
 @router.callback_query(F.data.startswith("user:join:"))
@@ -978,24 +979,6 @@ async def cb_user_join_contest(query: CallbackQuery, bot: Bot) -> None:
     if query.message:
         await query.message.edit_text(msg, parse_mode="HTML", reply_markup=kb)
     await query.answer()
-
-
-@router.message(UserStates.waiting_promo_code)
-async def user_enter_promo_code(message: Message, state: FSMContext) -> None:
-    """Foydalanuvchi promokod yozganda."""
-    code_text = message.text.strip() if message.text else ""
-    user_id = message.from_user.id if message.from_user else 0
-
-    success, msg, pts, reward_type = await claim_promo_code(user_id, code_text)
-    await state.clear()
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👤 Profilim", callback_data="user:profile")],
-        [InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")],
-    ])
-
-    await message.reply(f"{msg}", parse_mode="HTML", reply_markup=kb)
-
 
 @router.message(F.text == "🎡 Omad G'ildiragi")
 async def cb_user_wheel(message: Message) -> None:
