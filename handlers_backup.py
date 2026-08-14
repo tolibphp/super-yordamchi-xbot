@@ -136,12 +136,6 @@ class UserStates(StatesGroup):
     waiting_promo_code = State()
     waiting_birthday_input = State()
 
-class BirthdayState(StatesGroup):
-    waiting_for_birthday = State()
-
-class PromoState(StatesGroup):
-    waiting_for_code = State()
-
 
 async def set_bot_username(bot: Bot) -> None:
     """Bot username'ini olish va saqlash."""
@@ -163,7 +157,7 @@ def _get_progress_bar(current: int, target: int = 50, length: int = 10) -> str:
     empty = length - filled
     return "█" * filled + "░" * empty
 
-def _build_user_dashboard(user: dict, bot_user_name: str) -> tuple[str, ReplyKeyboardMarkup]:
+def _build_user_dashboard(user: dict, bot_user_name: str) -> tuple[str, InlineKeyboardMarkup]:
     """Foydalanuvchi asosiy boshqaruv kabineti matni va tugmalari."""
     name = html.escape(user.get("first_name", "Do'stim"))
     points = user.get("points", 0)
@@ -550,32 +544,37 @@ async def cb_user_verify_sub(query: CallbackQuery, bot: Bot, state: FSMContext) 
 # FOYDALANUVCHI MENYU CALLBACKLARI
 # ─────────────────────────────────────────────
 
-@router.message(F.text == "🔙 Asosiy Menyu")
-async def cb_user_menu(message: Message, bot: Bot, state: FSMContext) -> None:
+@router.callback_query(F.data == "user:menu")
+async def cb_user_menu(query: CallbackQuery, bot: Bot, state: FSMContext) -> None:
     """Asosiy menyuga qaytish."""
     await state.clear()
     if not _bot_username:
         await set_bot_username(bot)
 
-    user_dict = await get_user_profile(message.from_user.id)
+    user_dict = await get_user_profile(query.from_user.id)
     if not user_dict:
         user_dict, _ = await get_or_create_user(
-            message.from_user.id,
-            message.from_user.username,
-            message.from_user.first_name or "Foydalanuvchi",
+            query.from_user.id,
+            query.from_user.username,
+            query.from_user.first_name or "Foydalanuvchi",
         )
 
     text, kb = _build_user_dashboard(user_dict, _bot_username)
-    await message.answer(text, parse_mode="HTML", reply_markup=kb)
+    if query.message:
+        try:
+            await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            pass
+    await query.answer()
 
 
-@router.message(F.text == "🚀 Do'stlarga Ulashish")
-async def cb_user_share(message: Message, bot: Bot) -> None:
+@router.callback_query(F.data == "user:share")
+async def cb_user_share(query: CallbackQuery, bot: Bot) -> None:
     """Do'stlarga ulashish (1-bosishda share)."""
     if not _bot_username:
         await set_bot_username(bot)
 
-    user_id = message.from_user.id
+    user_id = query.from_user.id
     share_url, post_text = build_share_data(_bot_username, user_id)
     ref_link = f"https://t.me/{_bot_username}?start=ref_{user_id}"
 
@@ -598,25 +597,29 @@ async def cb_user_share(message: Message, bot: Bot) -> None:
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🚀 Do'stlarga Yuborish (1-bosishda)", url=share_url),
-        ]
+        ],
+        [
+            InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu"),
+        ],
     ])
 
-    await message.answer(text, parse_mode="HTML", reply_markup=kb)
+    if query.message:
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await query.answer()
 
 
-@router.message(F.text == "👤 Profilim")
-@router.message(F.text == "👤 Mening ma'lumotlarim")
-async def cb_user_profile(message: Message, bot: Bot) -> None:
+@router.callback_query(F.data == "user:profile")
+async def cb_user_profile(query: CallbackQuery, bot: Bot) -> None:
     """Foydalanuvchi shaxsiy profili."""
     if not _bot_username:
         await set_bot_username(bot)
 
-    user = await get_user_profile(message.from_user.id)
+    user = await get_user_profile(query.from_user.id)
     if not user:
         user, _ = await get_or_create_user(
-            message.from_user.id,
-            message.from_user.username,
-            message.from_user.first_name or "Foydalanuvchi",
+            query.from_user.id,
+            query.from_user.username,
+            query.from_user.first_name or "Foydalanuvchi",
         )
 
     name = html.escape(user.get("first_name", "Foydalanuvchi"))
@@ -645,11 +648,14 @@ async def cb_user_profile(message: Message, bot: Bot) -> None:
             elif days_left == 1:
                 bday_display = f"🎂 <b>{bd_fmt}</b> (Ertaga! ⏳)"
             else:
-                bday_display = f"🎂 <b>{bd_fmt}</b> (Yana {days_left} kun qoldi)"
+                bday_display = f"🎂 <b>{bd_fmt}</b> ({days_left} kun qoldi ⏳)"
+            bday_btn_text = "🎂 Tug'ilgan kunni o'zgartirish"
         else:
-            bday_display = "❌ Noto'g'ri formatda saqlangan"
+            bday_display = f"🎂 <b>{birthday}</b>"
+            bday_btn_text = "🎂 Tug'ilgan kunni o'zgartirish"
     else:
-        bday_display = "Kiritilmagan (Kiritsangiz sovg'a olasiz!)"
+        bday_display = "<i>Belgilanmagan</i>"
+        bday_btn_text = "🎂 Tug'ilgan kunimni kiritish"
 
     text = (
         f"👤 <b>SIZNING SHAXSIY PROFILINGIZ</b>\n"
@@ -671,43 +677,47 @@ async def cb_user_profile(message: Message, bot: Bot) -> None:
         f"🔗 <b>Sizning taklif havolangiz:</b>\n<code>{ref_link}</code>"
     )
 
-    kb = get_profile_keyboard()
-    await message.answer(text, parse_mode="HTML", reply_markup=kb)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🚀 Do'stlarni taklif qilish", callback_data="user:share"),
+        ],
+        [
+            InlineKeyboardButton(text=bday_btn_text, callback_data="user:set_birthday"),
+        ],
+        [
+            InlineKeyboardButton(text="🎁 Konkurslarga o'tish", callback_data="user:contests"),
+            InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu"),
+        ],
+    ])
+
+    if query.message:
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await query.answer()
 
 
-@router.message(F.text == "🎂 Tug'ilgan kun kiritish")
-@router.message(F.text == "🎂 Tug'ilgan kunni o'zgartirish")
-@router.message(F.text == "🎂 Tug'ilgan kunni qayta kiritish")
-async def cb_user_set_birthday(message: Message, state: FSMContext) -> None:
-    """Foydalanuvchi tug'ilgan kunini o'rnatish uchun kirish joyi."""
-    await state.set_state(BirthdayState.waiting_for_birthday)
-    
+@router.callback_query(F.data == "user:set_birthday")
+async def cb_user_set_birthday(query: CallbackQuery, state: FSMContext) -> None:
+    """Tug'ilgan kunni kiritish holatini yoqish."""
+    await state.set_state(UserStates.waiting_birthday_input)
     text = (
-        "🎂 <b>Tug'ilgan kuningiz qachon?</b>\n\n"
+        "🎂 <b>TUG'ILGAN KUNINGIZNI KIRITING</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
         "Tug'ilgan kuningiz sanasini yuboring. Har yili ushbu sanada sizni guruhimizda qizg'in tabriklaymiz "
-        "va bayramona sovg'alar taqdim etamiz! 🎉\n\n"
-        "<i>👇 Quyidagi formatlardan birida yozing:</i>\n"
-        "• <code>15 may</code>\n"
-        "• <code>15.05</code>\n"
-        "• <code>2000-05-15</code>\n"
-        "• <code>15-may</code>"
+        "va kuningizgacha qolgan vaqtni hisoblab boramiz! 🎉\n\n"
+        "✍️ <b>Masalan:</b> <code>15.08</code> yoki <code>15-avgust</code> yoki <code>15.08.2002</code>"
     )
-    
-    kb = get_profile_keyboard()
-    await message.answer(text, parse_mode="HTML", reply_markup=kb)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="user:profile")],
+    ])
+    if query.message:
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await query.answer()
 
 
-@router.message(BirthdayState.waiting_for_birthday)
+@router.message(UserStates.waiting_birthday_input)
 async def user_enter_birthday(message: Message, state: FSMContext) -> None:
     """Foydalanuvchi tug'ilgan kun sanasini yuborganda."""
     if not message.from_user or not message.text:
-        return
-
-    # Check for cancellation via text
-    if message.text in ["🔙 Asosiy Menyu", "❌ Bekor qilish", "/cancel", "🔙 Orqaga"]:
-        await state.clear()
-        kb = get_profile_keyboard()
-        await message.answer("Bekor qilindi.", reply_markup=kb)
         return
 
     parsed = parse_birthday_string(message.text)
@@ -785,36 +795,6 @@ async def cmd_user_birthday(message: Message, state: FSMContext) -> None:
     await message.answer(prompt_text, parse_mode="HTML", reply_markup=b_kb)
 
 
-@router.message(F.text == "🎁 Konkurslar")
-@router.message(F.text == "🎁 Faol Konkurslar")
-async def cb_user_contests(message: Message) -> None:
-    """Faol konkurslar ro'yxati."""
-    contests = await get_all_contests(status="active")
-    if not contests:
-        await message.answer("😔 Hozircha faol konkurslar yo'q.", reply_markup=get_contests_keyboard())
-        return
-
-    lines = ["🎁 <b>FAOL KONKURSLAR RO'YXATI</b>\n"]
-    buttons = []
-    
-    for c in contests:
-        c_id = c["id"]
-        c_type = c["type"]
-        c_prize = c["prize"]
-        c_ends = c["end_time"]
-        
-        badge = "💎 Telegram Premium" if c_type == "premium" else ("🎁 Telegram Gift" if c_type == "gift" else "🎯 Maxsus")
-        lines.append(f"🔸 <b>{badge}</b> (ID: {c_id})")
-        lines.append(f"   Sovg'a: {c_prize}")
-        lines.append(f"   Tugaydi: {c_ends}\n")
-        
-        buttons.append([InlineKeyboardButton(text=f"👉 Konkurs #{c_id} da qatnashish", callback_data=f"user:join:{c_id}")])
-
-    inline_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=inline_kb)
-    await message.answer("👆 Yuqoridagi tugmalarni bosib konkursda qatnashishingiz mumkin.", reply_markup=get_contests_keyboard())
-
-
 @router.message(Command("tugilgan_kunlar"))
 async def cmd_group_birthdays(message: Message, bot: Bot) -> None:
     """Guruhda /tugilgan_kunlar bosilganda hisoblagich va tabriklarni ko'rsatish."""
@@ -826,61 +806,57 @@ async def cmd_group_birthdays(message: Message, bot: Bot) -> None:
     await message.reply(post_text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
 
 
-@router.message(F.text == "⚡ Bugungi post (+1 ball)")
-async def cb_user_daily_post(message: Message, bot: Bot) -> None:
-    """Bugungi kun posti (reaksiya uchun)."""
-    url = await get_setting("daily_post_url")
-    if not url:
-        await message.answer("😔 Bugungi post hozircha belgilanmagan. Keyinroq urinib ko'ring.", reply_markup=get_others_keyboard())
-        return
+@router.callback_query(F.data == "user:contests")
+async def cb_user_contests(query: CallbackQuery) -> None:
+    """Faol konkurslar ro'yxati va ularga qatnashish imkoniyati."""
+    contests = await get_active_contests()
+    user = await get_user_profile(query.from_user.id)
+    user_refs = user.get("referral_count", 0) if user else 0
 
-    text = (
-        "⚡ <b>BUGUNGI POST</b>\n\n"
-        "Quyidagi postni ko'ring va unga reaksiya bildiring. "
-        "Ushbu post orqali ball to'plashingiz yoki yashirin promokod topishingiz mumkin!"
-    )
-    inline_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👀 Postni ko'rish", url=url)],
-    ])
-    await message.answer(text, parse_mode="HTML", reply_markup=inline_kb)
+    if not contests:
+        text = (
+            "🎁 <b>FAOL KONKURSLAR</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "⚠️ Hozirda faol konkurslar mavjud emas.\n"
+            "Tez orada yangi qimmatbaho konkurslar e'lon qilinadi! Kanalimizni kuzatib boring."
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")],
+        ])
+    else:
+        lines = [
+            "🎁 <b>HOZIRGI FAOL KONKURSLAR</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n",
+            f"📊 Sizning hozirgi referallaringiz: <b>{user_refs} ta</b>\n",
+        ]
 
+        buttons = []
+        for c in contests:
+            c_type = c["contest_type"]
+            badge = "💎 Telegram Premium" if c_type == "premium" else ("🎁 Telegram Gift" if c_type == "gift" else "🎯 Maxsus")
+            min_r = c["min_referrals"]
+            title = c["title"]
+            prize = c["prize_description"] or "Sovg'alar"
 
-@router.message(F.text == "🔑 Promokod kiritish")
-async def cb_user_promo_prompt(message: Message, state: FSMContext) -> None:
-    """Promokod kiritishni so'rash."""
-    await state.set_state(PromoState.waiting_for_code)
+            lines.append(f"🏆 <b>{title}</b> ({badge})")
+            lines.append(f"🎁 <b>Sovg'a:</b> {prize}")
+            lines.append(f"📌 <b>Talab:</b> Kamida <b>{min_r} ta</b> faol referal")
+            lines.append("──────────────────────")
 
-    text = (
-        "🔑 <b>PROMOKOD KIRITISH</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Iltimos, kanalimizdan topgan yashirin promokodni yuboring:\n"
-        "<i>(Promokodni katta/kichik harflariga e'tibor bermasdan yozishingiz mumkin)</i>"
-    )
-    await message.answer(text, parse_mode="HTML", reply_markup=get_contests_keyboard())
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"🎁 Qatnashish: {title[:20]}",
+                    callback_data=f"user:join:{c['id']}",
+                )
+            ])
 
+        buttons.append([InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")])
+        text = "\n".join(lines)
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-@router.message(PromoState.waiting_for_code)
-async def process_promo_input(message: Message, state: FSMContext, bot: Bot) -> None:
-    """Yuborilgan promokodni tekshirish."""
-    if not message.text or not message.from_user:
-        return
-
-    code = message.text.strip().lower()
-    if code in ["bekor qilish", "/cancel", "🔙 asosiy menyu", "🔙 orqaga", "🔑 promokod kiritish"]:
-        await state.clear()
-        await message.reply("❌ Promokod kiritish bekor qilindi.", reply_markup=get_contests_keyboard())
-        return
-
-    user_id = message.from_user.id
-    success, msg = await use_promo_code(user_id, code)
-
-    lines = [
-        "🔑 <b>PROMOKOD NATIJASI</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n",
-        msg,
-    ]
-    await state.clear()
-    await message.reply("\n".join(lines), parse_mode="HTML", reply_markup=get_contests_keyboard())
+    if query.message:
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await query.answer()
 
 
 @router.callback_query(F.data.startswith("user:join:"))
@@ -908,6 +884,49 @@ async def cb_user_join_contest(query: CallbackQuery, bot: Bot) -> None:
     await query.answer()
 
 
+@router.callback_query(F.data == "user:daily_post")
+async def cb_user_daily_post(query: CallbackQuery) -> None:
+    """Kunlik post o'qish uchun +1 ball olish."""
+    user_id = query.from_user.id
+    success, msg = await claim_daily_post_reward(user_id)
+    daily_url = await get_bot_setting("daily_post_url", "")
+
+    lines = [
+        "⚡ <b>KUNLIK POST MUKOFOSTI</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n",
+        msg,
+    ]
+
+    buttons = []
+    if daily_url:
+        buttons.append([InlineKeyboardButton(text="📢 Bugungi Postni Ko'rish", url=daily_url)])
+
+    buttons.append([InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")])
+
+    if query.message:
+        await query.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await query.answer()
+
+
+@router.callback_query(F.data == "user:promo")
+async def cb_user_promo_prompt(query: CallbackQuery, state: FSMContext) -> None:
+    """Promokod kiritishni so'rash."""
+    await state.set_state(UserStates.waiting_promo_code)
+    text = (
+        "🔑 <b>YASHIRIN PROMOKOD KIRITISH</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Kanaldagi postlarga yashirilgan maxsus promokodlarni (masalan: <code>#AI_PRO</code>) kiritib, "
+        "qo'shimcha ballar yoki <b>bepul referallarni</b> qo'lga kiriting!\n\n"
+        "✍️ <b>Promokodni yuboring:</b>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="user:menu")],
+    ])
+    if query.message:
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await query.answer()
+
+
 @router.message(UserStates.waiting_promo_code)
 async def user_enter_promo_code(message: Message, state: FSMContext) -> None:
     """Foydalanuvchi promokod yozganda."""
@@ -925,10 +944,12 @@ async def user_enter_promo_code(message: Message, state: FSMContext) -> None:
     await message.reply(f"{msg}", parse_mode="HTML", reply_markup=kb)
 
 
-@router.message(F.text == "🎡 Omad G'ildiragi")
-async def cb_user_wheel(message: Message) -> None:
+# ── OMAD G'ILDIRAGI (LUCKY WHEEL) ──
+
+@router.callback_query(F.data == "user:wheel")
+async def cb_user_wheel(query: CallbackQuery) -> None:
     """Kunlik Omad G'ildiragi ekrani."""
-    user_id = message.from_user.id
+    user_id = query.from_user.id
     can_spin = await get_user_wheel_status(user_id)
 
     status_text = "🟢 <b>Bugungi bepul imkoniyat mavjud!</b>" if can_spin else "⏳ <b>Bugungi imkoniyatdan foydalangansiz! (Ertaga ochiladi)</b>"
@@ -992,8 +1013,8 @@ async def cb_user_spin_wheel(query: CallbackQuery, bot: Bot) -> None:
 
 # ── HAFTALIK LIDERLAR REYTINGI ──
 
-@router.message(F.text == "🏁 Haftalik Top-5")
-async def cb_user_weekly_top(message: Message) -> None:
+@router.callback_query(F.data == "user:weekly_top")
+async def cb_user_weekly_top(query: CallbackQuery) -> None:
     """Haftalik eng ko'p referal to'plagan Top-5 liderlar va Telegram Stars yutuqlari."""
     leaders = await get_weekly_top_referrers(limit=5)
     lines = [
@@ -1026,12 +1047,18 @@ async def cb_user_weekly_top(message: Message) -> None:
 
     lines.append("\n💡 <i>Har hafta yakunida g'oliblarga Stars taqdim etiladi! Siz ham do'stlaringizni taklif qiling va yetakchiga aylaning!</i>")
 
-    await message.answer("".join(lines), parse_mode="HTML", reply_markup=get_top_keyboard())
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Do'stlarni taklif qilish", callback_data="user:share")],
+        [InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")],
+    ])
+
+    if query.message:
+        await query.message.edit_text("".join(lines), parse_mode="HTML", reply_markup=kb)
+    await query.answer()
 
 
-@router.message(F.text == "🏆 Reytinglar")
-@router.message(F.text == "🏆 Umumiy Reyting (Top)")
-async def cb_user_top(message: Message) -> None:
+@router.callback_query(F.data == "user:top")
+async def cb_user_top(query: CallbackQuery) -> None:
     """Eng ko'p do'st taklif qilgan liderlar reytingi (Umumiy)."""
     leaders = await get_top_referrers(limit=10)
     lines = [
@@ -1052,12 +1079,18 @@ async def cb_user_top(message: Message) -> None:
 
     lines.append("\n💡 <i>Liderlar ro'yxatiga kirish uchun ko'proq do'stlaringizni taklif qiling!</i>")
 
-    await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=get_top_keyboard())
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Do'stlarni taklif qilish", callback_data="user:share")],
+        [InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")],
+    ])
+
+    if query.message:
+        await query.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+    await query.answer()
 
 
-@router.message(F.text == "⚙️ Boshqalar")
-@router.message(F.text == "ℹ️ Qo'llanma")
-async def cb_user_help(message: Message) -> None:
+@router.callback_query(F.data == "user:help")
+async def cb_user_help(query: CallbackQuery) -> None:
     """Foydalanuvchi uchun yo'riqnoma."""
     text = (
         "📖 <b>BOT VA KONKURSLAR BO'YICHA QO'LLANMA</b>\n"
@@ -1073,7 +1106,12 @@ async def cb_user_help(message: Message) -> None:
         "Kanal postlari ostidagi muhokama guruhida 🎰 stikerini yuborib, "
         "birinchi 777 tushirgan ishtirokchi kutilmagan sovg'ani yutadi!"
     )
-    await message.answer(text, parse_mode="HTML", reply_markup=get_others_keyboard())
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")],
+    ])
+    if query.message:
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await query.answer()
 
 
 # ─────────────────────────────────────────────
