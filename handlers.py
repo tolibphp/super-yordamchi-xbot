@@ -187,22 +187,22 @@ def _build_user_dashboard(user: dict, bot_user_name: str) -> tuple[str, ReplyKey
     text = (
         f"👋 <b>Xush kelibsiz, {name}!</b>{vip_badge}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 <b>Balingiz:</b> <code>{points}</code> ball\n"
-        f"👥 <b>Do'stlar:</b> <code>{refs}</code> ta\n"
-        f"🎯 <b>Konkurs Progressi:</b>\n"
-        f"[{_get_progress_bar(refs, 50)}] {refs}/50\n"
+        f"Sizning shaxsiy kabinetingiz:\n\n"
+        f"💰 <b>Balans:</b> <code>{points}</code> ball\n"
+        f"👥 <b>Taklif qilingan do'stlar:</b> <code>{refs}</code> ta\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🔥 <b>Qanday qilib ball to'plash mumkin?</b>\n"
-        f"1️⃣ «🚀 Do'stlarga Ulashish» orqali do'stlaringizni taklif qiling (+1 ball)\n"
-        f"2️⃣ 🎡 Kunlik «Omad G'ildiragi»ni bepul aylantiring\n"
-        f"3️⃣ Guruhda faol gaplashing (+1 ball chat mining)\n"
-        f"4️⃣ Kanaldagi postlarni ko'ring va yashirin promokodlarni tering!\n\n"
-        f"🎁 <b>Qimmatbaho konkurslarimizda qatnashing va Telegram Premium yuting!</b>"
+        f"🚀 <b>Botdan qanday qilib foyda olish mumkin?</b>\n\n"
+        f"🎯 <b>1. Vazifalarni bajaring</b>\n"
+        f"«📝 Vazifalar» bo'limiga kiring, kanallarga obuna bo'ling va tekin ballarni qo'lga kiriting.\n\n"
+        f"🎡 <b>2. Omad G'ildiragi</b>\n"
+        f"Har 24 soatda g'ildirakni bepul aylantiring va kutilmagan sovg'alarni yutib oling.\n\n"
+        f"🎁 <b>3. Konkurslarda qatnashing</b>\n"
+        f"Yig'ilgan ballaringiz va referallaringiz orqali qimmatbaho sovrinli (masalan, Telegram Premium) konkurslarga qo'shiling.\n\n"
+        f"🏆 <b>4. Haftalik Reyting</b>\n"
+        f"«🚀 Do'stlarga Ulashish» orqali tarmoq yarating. Har hafta eng ko'p odam taklif qilgan Top-3 ishtirokchilar alohida mukofotlanadi!"
     )
 
-    # ASOSIY MENYU KLAVIATURASI (REPLY)
     kb = get_main_keyboard()
-
     return text, kb
 
 
@@ -1063,48 +1063,61 @@ async def cb_user_weekly_top(message: Message) -> None:
 
 
 @router.message(F.text == "🏆 Reytinglar")
-@router.message(F.text == "🏆 Umumiy Reyting (Top)")
 async def cb_user_top(message: Message) -> None:
-    """Eng ko'p do'st taklif qilgan liderlar reytingi (Umumiy)."""
-    leaders = await get_top_referrers(limit=10)
-    lines = [
-        "🏆 <b>ENG KO'P DO'ST TAKLIF QILGAN LIDERLAR (UMUMIY)</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n",
-    ]
-
-    if not leaders:
-        lines.append("⚠️ Hozircha referal taklif qilganlar yo'q. Birinchi bo'ling!")
+    """Reytinglar bo'limi (Umumiy va Haftalik bitta xabarda)."""
+    lines = []
+    
+    # --- HAFTALIK TOP 3 ---
+    lines.append("🏁 <b>HAFTALIK TOP-3 CHEMPIONLAR</b>")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("<i>Bu hafta eng ko'p do'st taklif qilganlar:</i>\n")
+    
+    weekly_leaders = await get_weekly_top_referrers(limit=3)
+    if not weekly_leaders:
+        lines.append("⚠️ Hozircha bu haftada hech kim do'st taklif qilmadi.\n")
     else:
-        for i, u in enumerate(leaders, start=1):
-            medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"][i - 1]
+        medals = ["🥇", "🥈", "🥉"]
+        for i, u in enumerate(weekly_leaders):
+            name = html.escape(u.get("first_name", "Noma'lum"))
+            refs = u.get("weekly_refs", 0)
+            lines.append(f"{medals[i]} <b>{name}</b> — <b>{refs}</b> ta do'st")
+    
+    lines.append("\n\n🏆 <b>UMUMIY LIDERLAR (TOP-10)</b>")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━")
+    
+    all_leaders = await get_top_referrers(limit=10)
+    if not all_leaders:
+        lines.append("⚠️ Umumiy reyting ham hozircha bo'sh.")
+    else:
+        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        for i, u in enumerate(all_leaders):
+            medal = medals[i]
             name = html.escape(u.get("first_name", "Noma'lum"))
             refs = u.get("referral_count", 0)
             pts = u.get("points", 0)
-            vip = " 👑" if u.get("vip_status") == 1 else ""
-            lines.append(f"{medal} <b>{name}</b>{vip} — <b>{refs}</b> ta do'st ({pts} ball)")
-
-    lines.append("\n💡 <i>Liderlar ro'yxatiga kirish uchun ko'proq do'stlaringizni taklif qiling!</i>")
-
+            lines.append(f"{medal} <b>{name}</b> — <b>{refs}</b> do'st ({pts} ball)")
+            
+    lines.append("\n💡 <i>Har hafta 1-o'rinlarga maxsus sovg'alar mavjud! Lider bo'lish o'z qo'lingizda!</i>")
+    
     await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=get_main_keyboard())
 
 
-@router.message(F.text == "⚙️ Boshqalar")
 @router.message(F.text == "ℹ️ Qo'llanma")
 async def cb_user_help(message: Message) -> None:
-    """Foydalanuvchi uchun yo'riqnoma."""
+    """Foydalanuvchi uchun kengaytirilgan qo'llanma."""
     text = (
-        "📖 <b>BOT VA KONKURSLAR BO'YICHA QO'LLANMA</b>\n"
+        "📖 <b>BOTDAN FOYDALANISH BO'YICHA QO'LLANMA</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🎯 <b>Konkursda qanday qatnashish mumkin?</b>\n"
-        "1. «🎁 Faol Konkurslar» bo'limiga kiring.\n"
-        "2. Konkurs shartini (masalan: min 30 yoki 50 ta referal) bajaring.\n"
-        "3. «🎁 Qatnashish» tugmasini bosing va o'z omadli chiptangizni oling!\n\n"
-        "🛡️ <b>Anti-Drop (Jarima) tizimi qanday ishlaydi?</b>\n"
-        "Siz taklif qilgan do'st kanaldan chiqib ketmasligi kerak. "
-        "Agar u kanaldan chiqsa, sizdan avtomatik <b>-1 ball</b> olinadi.\n\n"
-        "🎰 <b>777 Jackpot o'yini:</b>\n"
-        "Kanal postlari ostidagi muhokama guruhida 🎰 stikerini yuborib, "
-        "birinchi 777 tushirgan ishtirokchi kutilmagan sovg'ani yutadi!"
+        "<b>1. Qanday qilib pul yoki sovg'a ishlash mumkin?</b>\n"
+        "Botda ikki xil daromad yo'li bor:\n"
+        "🔹 <b>Ball yig'ish orqali:</b> «📝 Vazifalar» bo'limida kanallarga obuna bo'lib yoki «Omad g'ildiragi»ni aylantirib ball yig'asiz. Keyinchalik bu ballarga do'kondan real to'lov (Paynet) yoki sovg'alar olasiz.\n"
+        "🔹 <b>Referal (Do'st) chaqirish orqali:</b> Eng katta daromad do'st chaqirishda. Do'st taklif qilsangiz katta Konkurslarda qatnashib (masalan, Premium, Telefon) yutishingiz mumkin. Shuningdek har hafta e'lon qilinadigan «Haftalik Top-3» da yutib ham mukofot olasiz.\n\n"
+        "<b>2. Konkursda qatnashish shartlari:</b>\n"
+        "«🎁 Konkurslar» menyusiga kiring. Har bir konkursning o'z sharti bor (masalan, 10 ta do'st taklif qilish). Shartni bajargach «Qatnashish» tugmasini bosib bilet olasiz.\n\n"
+        "<b>3. Anti-Drop tizimi:</b>\n"
+        "Agar siz chaqirgan do'st tizimga kirmasa yoki bizning kanallardan chiqib ketsa, hisobingizdan avtomatik tarzda jarima (minus) ball yechiladi. Shuning uchun faqat faol do'stlarni chaqiring.\n\n"
+        "<b>4. Promokodlar qanday ishlaydi?</b>\n"
+        "Adminlar asosiy kanalga kutilmaganda promokodlar (masalan: <code>SOVGA100</code>) tashlaydi. Uni 1-bo'lib botning «🔑 Promokod kiritish» joyiga yozgan ishtirokchi bepul ball yoki VIP status yutadi."
     )
     await message.answer(text, parse_mode="HTML", reply_markup=get_main_keyboard())
 
