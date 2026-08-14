@@ -823,21 +823,35 @@ async def cmd_group_birthdays(message: Message, bot: Bot) -> None:
 
 @router.message(F.text == "📝 Vazifalar")
 async def cb_user_tasks(message: Message, bot: Bot) -> None:
-    """Foydalanuvchilar uchun vazifalar (Sponsor kanallar) ro'yxati."""
+    """Foydalanuvchilar uchun vazifalar (Sponsor kanallar) ro'yxati va Kunlik Post."""
     user_id = message.from_user.id
     tasks = await get_active_tasks()
+    daily_post_url = await get_bot_setting("daily_post_url", "")
     
-    if not tasks:
+    if not tasks and not daily_post_url:
         await message.answer("📝 <b>Vazifalar Markazi</b>\n━━━━━━━━━━━━━━━━━━━━━\n\nHozircha faol vazifalar yo'q. Keyinroq yana tekshirib ko'ring!", parse_mode="HTML")
         return
         
     lines = [
         "📝 <b>VAZIFALAR MARKAZI</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "Quyidagi kanallarga obuna bo'ling va tekin ballarga ega bo'ling:\n"
+        "Quyidagi vazifalarni bajaring va tekin ballarga ega bo'ling:\n"
     ]
     
     buttons = []
+    
+    # 1. Kunlik post
+    if daily_post_url:
+        # Tekshiramizki bugun olinganmi? 
+        # Biroz qiyin, shuning uchun "Kunlik postni o'qish" tugmasini qo'yamiz
+        lines.append("🔸 <b>Bugungi kunlik post</b> — 🎁 +1 ball (Har kuni!)")
+        buttons.append([
+            InlineKeyboardButton(text="📢 Bugungi Postni Ko'rish", url=daily_post_url),
+            InlineKeyboardButton(text="🔄 Tekshirish", callback_data="user:daily_post_claim")
+        ])
+        lines.append("")
+
+    # 2. Boshqa kanallar (Sponsorlar)
     for t in tasks:
         is_done = await check_user_task_completed(user_id, t["id"])
         if is_done:
@@ -851,10 +865,21 @@ async def cb_user_tasks(message: Message, bot: Bot) -> None:
             
         lines.append(f"🔸 <b>{t['channel_title']}</b> — {status}")
         
-    lines.append("\n💡 <i>Obuna bo'lgach 'Tekshirish' tugmasini bosing!</i>")
+    lines.append("\n💡 <i>Vazifani bajargach 'Tekshirish' tugmasini bosing!</i>")
     
     kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
     await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(F.data == "user:daily_post_claim")
+async def cb_user_daily_post_claim(query: CallbackQuery, bot: Bot) -> None:
+    user_id = query.from_user.id
+    success, msg = await claim_daily_post_reward(user_id)
+    
+    if success:
+        await query.answer("✅ Muvaffaqiyatli! Sizga +1 ball berildi.", show_alert=True)
+    else:
+        # Buni faqat bitta alert bilan ko'rsatamiz
+        await query.answer("Siz bugungi post uchun ballni allaqachon olgansiz! Ertaga yana keling.", show_alert=True)
 
 @router.callback_query(F.data.startswith("user:task_check:"))
 async def cb_user_task_check(query: CallbackQuery, bot: Bot) -> None:
