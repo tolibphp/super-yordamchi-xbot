@@ -198,39 +198,13 @@ def _build_user_dashboard(user: dict, bot_user_name: str) -> tuple[str, ReplyKey
 def get_main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="👤 Mening ma'lumotlarim"), KeyboardButton(text="🎂 Tug'ilgan kun kiritish")],
-            [KeyboardButton(text="🔙 Asosiy Menyu")]
+            [KeyboardButton(text="👤 Profilim"), KeyboardButton(text="🎁 Konkurslar")],
+            [KeyboardButton(text="🎡 Omad G'ildiragi"), KeyboardButton(text="⚡ Bugungi post (+1 ball)")],
+            [KeyboardButton(text="🚀 Do'stlarga Ulashish"), KeyboardButton(text="🏆 Reytinglar")],
+            [KeyboardButton(text="🔑 Promokod kiritish"), KeyboardButton(text="ℹ️ Qo'llanma")],
         ],
-        resize_keyboard=True
-    )
-
-def get_main_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🎁 Faol Konkurslar"), KeyboardButton(text="🎡 Omad G'ildiragi")],
-            [KeyboardButton(text="🔑 Promokod kiritish")],
-            [KeyboardButton(text="🔙 Asosiy Menyu")]
-        ],
-        resize_keyboard=True
-    )
-
-def get_main_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🏆 Umumiy Reyting (Top)"), KeyboardButton(text="🏁 Haftalik Top-5")],
-            [KeyboardButton(text="🔙 Asosiy Menyu")]
-        ],
-        resize_keyboard=True
-    )
-
-def get_main_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🚀 Do'stlarga Ulashish"), KeyboardButton(text="⚡ Bugungi post (+1 ball)")],
-            [KeyboardButton(text="ℹ️ Qo'llanma")],
-            [KeyboardButton(text="🔙 Asosiy Menyu")]
-        ],
-        resize_keyboard=True
+        resize_keyboard=True,
+        persistent=True
     )
 
 
