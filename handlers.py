@@ -91,6 +91,13 @@ from database import (
     get_birthday_insights,
     parse_birthday_string,
     calculate_days_until_birthday,
+    add_task,
+    get_active_tasks,
+    get_all_tasks,
+    delete_task,
+    check_user_task_completed,
+    mark_user_task_completed,
+    reset_weekly_leaderboard,
 )
 from membership import check_membership, check_all_mandatory_subs
 from winner import pick_winner
@@ -130,6 +137,12 @@ class AdminStates(StatesGroup):
     manual_user_target = State()
     manual_reward_amount = State()
 
+
+class AdminTasksState(StatesGroup):
+    waiting_for_channel_id = State()
+    waiting_for_channel_title = State()
+    waiting_for_channel_url = State()
+    waiting_for_reward = State()
 
 class UserStates(StatesGroup):
     """Foydalanuvchi holatlari."""
@@ -199,7 +212,7 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="👤 Profilim"), KeyboardButton(text="🎁 Konkurslar")],
-            [KeyboardButton(text="🎡 Omad G'ildiragi"), KeyboardButton(text="⚡ Bugungi post (+1 ball)")],
+            [KeyboardButton(text="🎡 Omad G'ildiragi"), KeyboardButton(text="📝 Vazifalar")],
             [KeyboardButton(text="🚀 Do'stlarga Ulashish"), KeyboardButton(text="🏆 Reytinglar")],
             [KeyboardButton(text="🔑 Promokod kiritish"), KeyboardButton(text="ℹ️ Qo'llanma")],
         ],
@@ -808,28 +821,75 @@ async def cmd_group_birthdays(message: Message, bot: Bot) -> None:
     await message.reply(post_text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
 
 
-@router.message(F.text == "⚡ Bugungi post (+1 ball)")
-async def cb_user_daily_post(message: Message, bot: Bot) -> None:
-    """Kunlik post o'qish uchun +1 ball olish."""
+@router.message(F.text == "📝 Vazifalar")
+async def cb_user_tasks(message: Message, bot: Bot) -> None:
+    """Foydalanuvchilar uchun vazifalar (Sponsor kanallar) ro'yxati."""
     user_id = message.from_user.id
-    success, msg = await claim_daily_post_reward(user_id)
-    daily_url = await get_bot_setting("daily_post_url", "")
-
+    tasks = await get_active_tasks()
+    
+    if not tasks:
+        await message.answer("📝 <b>Vazifalar Markazi</b>\n━━━━━━━━━━━━━━━━━━━━━\n\nHozircha faol vazifalar yo'q. Keyinroq yana tekshirib ko'ring!", parse_mode="HTML")
+        return
+        
     lines = [
-        "⚡ <b>KUNLIK POST MUKOFOSTI</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n",
-        msg,
+        "📝 <b>VAZIFALAR MARKAZI</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "Quyidagi kanallarga obuna bo'ling va tekin ballarga ega bo'ling:\n"
     ]
-
+    
     buttons = []
-    if daily_url:
-        buttons.append([InlineKeyboardButton(text="📢 Bugungi Postni Ko'rish", url=daily_url)])
+    for t in tasks:
+        is_done = await check_user_task_completed(user_id, t["id"])
+        if is_done:
+            status = "✅ Bajarilgan"
+        else:
+            status = f"🎁 +{t['reward_points']} ball"
+            buttons.append([
+                InlineKeyboardButton(text=f"➕ {t['channel_title']}", url=t["channel_url"]),
+                InlineKeyboardButton(text="🔄 Tekshirish", callback_data=f"user:task_check:{t['id']}")
+            ])
+            
+        lines.append(f"🔸 <b>{t['channel_title']}</b> — {status}")
+        
+    lines.append("\n💡 <i>Obuna bo'lgach 'Tekshirish' tugmasini bosing!</i>")
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+    await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb)
 
-    if buttons:
-        inline_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-        await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=inline_kb)
-    else:
-        await message.answer("\n".join(lines), parse_mode="HTML")
+@router.callback_query(F.data.startswith("user:task_check:"))
+async def cb_user_task_check(query: CallbackQuery, bot: Bot) -> None:
+    task_id = int(query.data.split(":")[2])
+    user_id = query.from_user.id
+    
+    is_done = await check_user_task_completed(user_id, task_id)
+    if is_done:
+        await query.answer("Siz bu vazifani allaqachon bajargansiz!", show_alert=True)
+        return
+        
+    tasks = await get_active_tasks()
+    task = next((t for t in tasks if t["id"] == task_id), None)
+    if not task:
+        await query.answer("Bu vazifa endi faol emas.", show_alert=True)
+        return
+        
+    channel_id = task["channel_id"]
+    try:
+        member = await bot.get_chat_member(chat_id=channel_id, user_id=user_id)
+        if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+            await query.answer("Siz hali kanalga a'zo bo'lmadingiz!", show_alert=True)
+            return
+    except Exception:
+        # Botingiz kanalda admin bo'lmasa tekshirolmaydi
+        pass
+        
+    await mark_user_task_completed(user_id, task_id)
+    await manual_add_user_points(user_id, task["reward_points"])
+    
+    await query.answer(f"✅ Vazifa bajarildi! Sizga +{task['reward_points']} ball berildi.", show_alert=True)
+    
+    # Xabarni yangilash
+    await cb_user_tasks(query.message, bot)
+
 
 
 @router.message(F.text == "🔑 Promokod kiritish")
@@ -975,37 +1035,27 @@ async def cb_user_spin_wheel(query: CallbackQuery, bot: Bot) -> None:
 
 # ── HAFTALIK LIDERLAR REYTINGI ──
 
-@router.message(F.text == "🏁 Haftalik Top-5")
+@router.message(F.text == "🏁 Haftalik Top-3")
 async def cb_user_weekly_top(message: Message) -> None:
-    """Haftalik eng ko'p referal to'plagan Top-5 liderlar va Telegram Stars yutuqlari."""
-    leaders = await get_weekly_top_referrers(limit=5)
+    """Haftalik eng ko'p referal to'plagan Top-3 liderlar va yutuqlari."""
+    leaders = await get_weekly_top_referrers(limit=3)
     lines = [
-        "🏁 <b>HAFTALIK TOP-5 LIDERLAR (STARS YUTUQLARI)</b>\n"
+        "🏁 <b>HAFTALIK TOP-3 CHEMPIONLAR</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "<i>Oxirgi 7 kun ichida eng ko'p do'st taklif qilgan Top-5 ishtirokchi har hafta Telegram Stars bilan taqdirlanadi!</i>\n\n"
-        "🎁 <b>Haftalik Sovg'alar Jamg'armasi:</b>\n"
-        "🥇 <b>1-o'rin:</b> ⭐️ <b>2 ta Stars</b>\n"
-        "🥈 <b>2-o'rin:</b> ⭐️ <b>1 ta Stars</b>\n"
-        "🥉 <b>3-o'rin:</b> ⭐️ <b>1 ta Stars</b>\n"
-        "4️⃣ <b>4-o'rin:</b> ⭐️ <b>1 ta Stars</b>\n"
-        "5️⃣ <b>5-o'rin:</b> ⭐️ <b>1 ta Stars</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "<i>Bu hafta eng ko'p do'st taklif qilgan va faol bo'lgan peshqadamlar! Katta sovg'alarga tayyorlaning!</i>\n\n"
         "📊 <b>Hozirgi yetakchilar holati:</b>\n\n",
     ]
 
     if not leaders:
-        lines.append("⚠️ Hozircha bu haftada faoliyat qayd etilmadi. Birinchi bo'lib do'stlaringizni taklif qiling va Stars yuting!\n")
+        lines.append("⚠️ Hozircha bu haftada faoliyat qayd etilmadi. Birinchi bo'lib do'stlaringizni taklif qiling va 1-o'rinni egallang!\n")
     else:
-        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
-        stars_rewards = ["⭐️ 2 Stars", "⭐️ 1 Star", "⭐️ 1 Star", "⭐️ 1 Star", "⭐️ 1 Star"]
+        medals = ["🥇", "🥈", "🥉"]
         for i, u in enumerate(leaders, start=1):
             medal = medals[i - 1]
-            prize = stars_rewards[i - 1]
             name = html.escape(u.get("first_name", "Noma'lum"))
             refs = u.get("weekly_refs", 0)
-            pts = u.get("points", 0)
             vip = " 👑" if u.get("vip_status") == 1 else ""
-            lines.append(f"{medal} <b>{name}</b>{vip} — <b>{refs}</b> ta do'st (Sovg'a: <b>{prize}</b>)\n")
+            lines.append(f"{medal} <b>{name}</b>{vip} — <b>{refs}</b> ta do'st\n")
 
     lines.append("\n💡 <i>Har hafta yakunida g'oliblarga Stars taqdim etiladi! Siz ham do'stlaringizni taklif qiling va yetakchiga aylaning!</i>")
 
@@ -2306,6 +2356,121 @@ async def cb_admin_toggle_sub(query: CallbackQuery) -> None:
         except Exception:
             pass
 
+
+@router.callback_query(F.data == "admin:finish_week")
+async def cb_admin_finish_week(query: CallbackQuery, bot: Bot) -> None:
+    leaders = await get_weekly_top_referrers(limit=3)
+    if not leaders:
+        await query.answer("Bu haftada hech qanday natija yo'q!", show_alert=True)
+        return
+        
+    lines = [
+        "🏆 <b>HAFTALIK TOP-3 CHEMPIONLARI E'LON QILINDI!</b> 🏆\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "Bu hafta eng ko'p do'st taklif qilgan va g'olib bo'lgan qahramonlarimiz:\n"
+    ]
+    
+    medals = ["🥇", "🥈", "🥉"]
+    for i, u in enumerate(leaders):
+        name = html.escape(u.get("first_name", "Noma'lum"))
+        lines.append(f"{medals[i]} {name} — {u.get('weekly_refs', 0)} ta do'st")
+        
+    lines.append("\n🎉 Barchangizni tabriklaymiz! Sovg'alaringiz tez orada taqdim etiladi.")
+    lines.append("⚡ Yangi hafta boshlandi! Hisoblagichlar noldan ishlamoqda. O'z omadingizni sinab ko'ring!")
+    
+    # Reset
+    await reset_weekly_leaderboard()
+    
+    # Send to group
+    target_channels = await _get_all_target_channels()
+    if target_channels:
+        group_id = target_channels[0]["channel_id"]
+        try:
+            await bot.send_message(group_id, "\n".join(lines), parse_mode="HTML")
+            await query.answer("✅ Guruhga e'lon qilindi va natijalar nolga tushirildi!", show_alert=True)
+        except Exception:
+            await query.answer("Guruhga yuborishda xatolik, lekin baza nolga tushirildi.", show_alert=True)
+    else:
+        await query.answer("Guruh topilmadi, lekin baza nolga tushirildi.", show_alert=True)
+
+
+@router.callback_query(F.data == "admin:tasks_menu")
+async def cb_admin_tasks_menu(query: CallbackQuery) -> None:
+    tasks = await get_all_tasks()
+    lines = ["📝 <b>Barcha Vazifalar (Sponsorlar):</b>\n"]
+    
+    if not tasks:
+        lines.append("Hech qanday vazifa qo'shilmagan.")
+        
+    for t in tasks:
+        lines.append(f"🔹 ID: {t['id']} | {t['channel_title']} | {t['reward_points']} ball")
+        
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Yangi qo'shish", callback_data="admin:task_add")],
+        [InlineKeyboardButton(text="🗑 O'chirish", callback_data="admin:task_del_list")],
+        [InlineKeyboardButton(text="🔙 Orqaga", callback_data="admin:menu")]
+    ])
+    
+    await query.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(F.data == "admin:task_add")
+async def cb_admin_task_add(query: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AdminTasksState.waiting_for_channel_id)
+    await query.message.answer("📝 Yangi vazifa: Kanalning ID raqamini (yoki @username) kiriting:")
+    await query.answer()
+
+@router.message(AdminTasksState.waiting_for_channel_id)
+async def admin_task_id_entered(message: Message, state: FSMContext) -> None:
+    await state.update_data(channel_id=message.text)
+    await state.set_state(AdminTasksState.waiting_for_channel_title)
+    await message.answer("📝 Kanalning chiroyli nomini yozing:")
+
+@router.message(AdminTasksState.waiting_for_channel_title)
+async def admin_task_title_entered(message: Message, state: FSMContext) -> None:
+    await state.update_data(channel_title=message.text)
+    await state.set_state(AdminTasksState.waiting_for_channel_url)
+    await message.answer("📝 Kanalning taklif ssilkasini yozing (https://...):")
+
+@router.message(AdminTasksState.waiting_for_channel_url)
+async def admin_task_url_entered(message: Message, state: FSMContext) -> None:
+    await state.update_data(channel_url=message.text)
+    await state.set_state(AdminTasksState.waiting_for_reward)
+    await message.answer("📝 Obuna uchun necha ball berilsin (raqam bilan):")
+
+@router.message(AdminTasksState.waiting_for_reward)
+async def admin_task_reward_entered(message: Message, state: FSMContext) -> None:
+    try:
+        reward = int(message.text)
+    except:
+        await message.answer("Faqat raqam kiriting!")
+        return
+        
+    data = await state.get_data()
+    await add_task(data['channel_id'], data['channel_title'], data['channel_url'], reward)
+    await state.clear()
+    
+    await message.answer("✅ Vazifa qo'shildi! /admin ni qayta bosing.")
+
+@router.callback_query(F.data == "admin:task_del_list")
+async def cb_admin_task_del_list(query: CallbackQuery) -> None:
+    tasks = await get_all_tasks()
+    if not tasks:
+        await query.answer("Vazifalar yo'q!", show_alert=True)
+        return
+        
+    buttons = []
+    for t in tasks:
+        buttons.append([InlineKeyboardButton(text=f"🗑 {t['channel_title']}", callback_data=f"admin:task_del:{t['id']}")])
+    buttons.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data="admin:tasks_menu")])
+    
+    await query.message.edit_text("O'chirish uchun vazifani tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@router.callback_query(F.data.startswith("admin:task_del:"))
+async def cb_admin_task_del(query: CallbackQuery) -> None:
+    task_id = int(query.data.split(":")[2])
+    await delete_task(task_id)
+    await query.answer("✅ Vazifa o'chirildi!", show_alert=True)
+    await cb_admin_tasks_menu(query)
 
 @router.callback_query(F.data == "admin:stats")
 async def cb_admin_stats(query: CallbackQuery) -> None:

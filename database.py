@@ -256,6 +256,28 @@ async def init_db() -> None:
             )
         """)
 
+        # ── VAZIFALAR MARKAZI (TASKS) ──
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id TEXT NOT NULL,
+                channel_title TEXT,
+                channel_url TEXT,
+                reward_points INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                created_at DATETIME DEFAULT (datetime('now'))
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_tasks (
+                user_id INTEGER NOT NULL,
+                task_id INTEGER NOT NULL,
+                completed_at DATETIME DEFAULT (datetime('now')),
+                UNIQUE(user_id, task_id)
+            )
+        """)
+
         # Indekslar
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_activity_user_id ON activity(user_id)
@@ -1738,3 +1760,65 @@ async def get_birthday_insights(limit: int = 5) -> tuple[list[dict], list[dict]]
 
     return today_list, upcoming_list[:limit]
 
+
+# ── VAZIFALAR MARKAZI (TASKS) FUNKSIYALARI ──
+
+async def add_task(channel_id: str, channel_title: str, channel_url: str, reward_points: int) -> bool:
+    """Yangi vazifa (kanal obunasi) qo'shish."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            await db.execute(
+                "INSERT INTO tasks (channel_id, channel_title, channel_url, reward_points, is_active) VALUES (?, ?, ?, ?, 1)",
+                (channel_id, channel_title, channel_url, reward_points)
+            )
+            await db.commit()
+            return True
+        except Exception:
+            return False
+
+async def get_active_tasks() -> list[dict]:
+    """Barcha faol vazifalarni olish."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM tasks WHERE is_active = 1 ORDER BY id ASC")
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+async def get_all_tasks() -> list[dict]:
+    """Barcha vazifalarni olish (admin uchun)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM tasks ORDER BY id ASC")
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+async def delete_task(task_id: int) -> bool:
+    """Vazifani o'chirish."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        await db.execute("DELETE FROM user_tasks WHERE task_id = ?", (task_id,))
+        await db.commit()
+        return True
+
+async def check_user_task_completed(user_id: int, task_id: int) -> bool:
+    """Foydalanuvchi bu vazifani bajarganligini tekshirish."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT 1 FROM user_tasks WHERE user_id = ? AND task_id = ?", (user_id, task_id))
+        row = await cursor.fetchone()
+        return bool(row)
+
+async def mark_user_task_completed(user_id: int, task_id: int) -> bool:
+    """Vazifani bajarilgan deb belgilash."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            await db.execute("INSERT INTO user_tasks (user_id, task_id) VALUES (?, ?)", (user_id, task_id))
+            await db.commit()
+            return True
+        except Exception:
+            return False
+
+async def reset_weekly_leaderboard() -> None:
+    """Haftalik reytingni noldan boshlash (weekly_refs ni 0 qilish)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE bot_users SET weekly_refs = 0")
+        await db.commit()
