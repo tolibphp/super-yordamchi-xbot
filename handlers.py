@@ -3199,3 +3199,103 @@ async def process_captcha(query: CallbackQuery, bot: Bot) -> None:
             logger.error(f"Decline qilishda xato: {e}")
             await query.answer("❌ Xatolik yuz berdi.", show_alert=True)
 
+
+@router.callback_query(F.data.in_({"user:share", "user:contests", "user:menu", "user:profile"}))
+async def cb_user_navigation(query: CallbackQuery, bot: Bot, state: FSMContext) -> None:
+    """Inline tugmalar orqali menyularga o'tishni boshqarish."""
+    data = query.data
+    await query.answer()
+    
+    # Biz original handlerlarga qo'l bilan soxta xabar kabi chaqirmaymiz.
+    # Uning o'rniga, kerakli funksiyaning logikasini chaqiramiz yoki tayyor funksiyani qayta yozamiz.
+    # Eng osoni: har bir holat uchun mos text va kb ni tayyorlab edit_text qilish.
+    
+    if not _bot_username:
+        await set_bot_username(bot)
+        
+    user_id = query.from_user.id
+    
+    if data == "user:share":
+        share_url, post_text = build_share_data(_bot_username, user_id)
+        ref_link = f"https://t.me/{_bot_username}?start=ref_{user_id}"
+        text_str = (
+            f"🚀 <b>DO'STLARNI TAKLIF QILISH VA 1-BOSISHDA ULASHISH</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🔗 <b>Sizning shaxsiy referal havolangiz:</b>\n"
+            f"<code>{ref_link}</code>\n\n"
+            f"💡 <i>Ushbu havolani do'stlaringizga, guruhlarga yoki kanallarga tarqating. "
+            f"Har bir yangi obuna bo'lgan do'stingiz uchun sizga <b>+1 ball</b> beriladi!</i>\n\n"
+            f"👇 <b>Hoziroq quyidagi tugmani bosib do'stlaringizga yuboring:</b>"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 Do'stlarga Yuborish (1-bosishda)", url=share_url)]])
+        if query.message:
+            await query.message.edit_text(text_str, parse_mode="HTML", reply_markup=kb)
+            
+    elif data == "user:menu":
+        user_dict = await get_user_profile(user_id)
+        if not user_dict:
+            user_dict, _ = await get_or_create_user(user_id, query.from_user.username, query.from_user.first_name)
+        text_str, kb = _build_user_dashboard(user_dict, _bot_username)
+        if query.message:
+            await query.message.delete()
+        await bot.send_message(user_id, text_str, parse_mode="HTML", reply_markup=kb)
+            
+    elif data == "user:contests":
+        # Konkurslar logikasi cb_user_contests ichida, uni yozish sal uzunroq.
+        # Shuning uchun eng yaxshi usul - eski xabarni o'chirib, cb_user_contests ni chaqirish.
+        if query.message:
+            await query.message.delete()
+        # Soxta xabar obyekti orqali cb_user_contests ga yuboramiz. 
+        # Aiogram 3 da to'liq fake message qilishdan ko'ra to'g'ridan to'g'ri chaqirish uchun send_message qilamiz.
+        contests = await get_active_contests()
+        if not contests:
+            await bot.send_message(user_id, "🎁 Hozircha hech qanday konkurs mavjud emas.", parse_mode="HTML", reply_markup=get_main_keyboard())
+            return
+            
+        text_str = "🎁 <b>FAOL KONKURSLAR</b>\n━━━━━━━━━━━━━━━━━━━━━\n\nQatnashish uchun konkursni tanlang:"
+        buttons = []
+        for c in contests:
+            buttons.append([InlineKeyboardButton(text=f"🎁 {c['title']}", callback_data=f"user:join:{c['id']}")])
+        buttons.append([InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")])
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await bot.send_message(user_id, text_str, parse_mode="HTML", reply_markup=kb)
+        
+    elif data == "user:profile":
+        if query.message:
+            await query.message.delete()
+        user = await get_user_profile(user_id)
+        if not user:
+            user, _ = await get_or_create_user(user_id, query.from_user.username, query.from_user.first_name)
+        name = html.escape(user.get("first_name", "Foydalanuvchi"))
+        pts = user.get("points", 0)
+        refs = user.get("referral_count", 0)
+        bonus = user.get("bonus_points", 0)
+        vip = user.get("vip_status", 0)
+        status = "👑 VIP A'zo" if vip else "👤 Oddiy A'zo"
+        total = pts + bonus
+        
+        bday = await get_user_birthday(user_id)
+        bday_text = bday if bday else "Kiritilmagan (Kiriting 🎁)"
+        
+        text_str = (
+            f"👤 <b>FOYDALANUVCHI PROFILI</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📝 <b>Ism:</b> {name}\n"
+            f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
+            f"🌟 <b>Status:</b> {status}\n\n"
+            f"💰 <b>Asosiy ballar:</b> {pts}\n"
+            f"🎁 <b>Bonus ballar:</b> {bonus}\n"
+            f"📈 <b>Jami ballar:</b> <b>{total} ball</b>\n\n"
+            f"👥 <b>Taklif qilingan do'stlar:</b> {refs} ta\n"
+            f"🎂 <b>Tug'ilgan kun:</b> {bday_text}"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🎂 Tug'ilgan kunni kiritish/o'zgartirish", callback_data="user:set_birthday")],
+            [InlineKeyboardButton(text="⬅️ Bosh Menyu", callback_data="user:menu")]
+        ])
+        await bot.send_message(user_id, text_str, parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(F.data == "none")
+async def cb_none_action(query: CallbackQuery) -> None:
+    """Bo'sh tugmalar uchun (masalan, tugallangan promokod)."""
+    await query.answer()
