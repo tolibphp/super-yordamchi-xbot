@@ -269,12 +269,32 @@ async def init_db() -> None:
             )
         """)
 
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS user_tasks (
                 user_id INTEGER NOT NULL,
                 task_id INTEGER NOT NULL,
                 completed_at DATETIME DEFAULT (datetime('now')),
                 UNIQUE(user_id, task_id)
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS comment_streaks (
+                user_id INTEGER PRIMARY KEY,
+                streak_days INTEGER DEFAULT 0,
+                last_comment_date TEXT,
+                daily_count INTEGER DEFAULT 0,
+                extra_tickets INTEGER DEFAULT 0
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS tolibjon_post_logs (
+                user_id INTEGER,
+                post_id INTEGER,
+                created_at DATE,
+                UNIQUE(user_id, post_id)
             )
         """)
 
