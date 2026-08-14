@@ -1212,16 +1212,20 @@ async def _build_admin_menu_text_and_kb() -> tuple[str, InlineKeyboardMarkup]:
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🎁 Yangi Konkurs Yaratish", callback_data="admin:new_contest"),
-            InlineKeyboardButton(text="🎲 G'oliblarni Aniqlash (/draw)", callback_data="admin:draw_list"),
+            InlineKeyboardButton(text="🎁 Yangi Konkurs", callback_data="admin:new_contest"),
+            InlineKeyboardButton(text="🎲 G'oliblarni Aniqlash", callback_data="admin:draw_list"),
         ],
         [
             InlineKeyboardButton(text="🔑 Promokod Yaratish", callback_data="admin:new_promo"),
-            InlineKeyboardButton(text="👤 Referal / Ball Qo'shish", callback_data="admin:manual_reward_menu"),
+            InlineKeyboardButton(text="👤 Ball Qo'shish", callback_data="admin:manual_reward_menu"),
+        ],
+        [
+            InlineKeyboardButton(text="📝 Vazifalar (Sponsor)", callback_data="admin:tasks_menu"),
+            InlineKeyboardButton(text="🎁 Haftani Yakunlash", callback_data="admin:finish_week"),
         ],
         [
             InlineKeyboardButton(text="⚡ Kunlik Post Linki", callback_data="admin:set_daily_post"),
-            InlineKeyboardButton(text="📢 Barchaga Xabar (Broadcast)", callback_data="admin:broadcast"),
+            InlineKeyboardButton(text="📢 Xabar (Broadcast)", callback_data="admin:broadcast"),
         ],
         [
             InlineKeyboardButton(text="➕ Majburiy Kanal Qo'shish", callback_data="admin:add_channel"),
