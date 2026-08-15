@@ -2932,11 +2932,17 @@ async def on_group_message(message: Message, bot: Bot) -> None:
             ])
 
             try:
-                warn_msg = await message.answer(
-                    "\n".join(warn_lines),
-                    parse_mode="HTML",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons),
-                )
+                warn_kwargs = {
+                    "text": "\n".join(warn_lines),
+                    "parse_mode": "HTML",
+                    "reply_markup": InlineKeyboardMarkup(inline_keyboard=kb_buttons),
+                }
+                if message.message_thread_id:
+                    warn_kwargs["message_thread_id"] = message.message_thread_id
+                elif message.reply_to_message and message.reply_to_message.is_automatic_forward:
+                    warn_kwargs["reply_to_message_id"] = message.reply_to_message.message_id
+                
+                warn_msg = await message.answer(**warn_kwargs)
                 asyncio.create_task(_auto_delete_msg(bot, message.chat.id, warn_msg.message_id, delay=60))
             except Exception as e:
                 logger.error("Ogohlantirish yuborishda xato: %s", e)
