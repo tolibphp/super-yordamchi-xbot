@@ -16,7 +16,8 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN ko'rsatilmagan! Railway Variables yoki .env faylida BOT_TOKEN ni to'ldiring.")
 
 # ADMIN_ID ixtiyoriy — agar raqam bo'lsa o'qiydi, bo'lmasa 0 bo'ladi
-ADMIN_ID: int = int(_raw_admin_id) if _raw_admin_id.isdigit() else 0
+ADMIN_IDS = [int(x.strip()) for x in _raw_admin_id.split(",") if x.strip().isdigit()]
+ADMIN_ID = ADMIN_IDS[0] if ADMIN_IDS else 0
 
 # O'zbekiston vaqt mintaqasi (UTC+5, Tashkent)
 from datetime import datetime, timezone, timedelta

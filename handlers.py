@@ -37,7 +37,7 @@ from aiogram.enums import ChatType, ChatMemberStatus
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
-from config import ADMIN_ID
+from config import ADMIN_ID, ADMIN_IDS, get_uzb_now
 from database import (
     DB_PATH,
     log_activity,
@@ -1230,7 +1230,7 @@ async def _build_admin_menu_text_and_kb() -> tuple[str, InlineKeyboardMarkup]:
 async def cmd_admin(message: Message, bot: Bot, state: FSMContext) -> None:
     """Admin panelni ochadi."""
     await state.clear()
-    if not ADMIN_ID or not message.from_user or message.from_user.id != ADMIN_ID:
+    if not ADMIN_IDS or not message.from_user or message.from_user.id not in ADMIN_IDS:
         return
 
     text, kb = await _build_admin_menu_text_and_kb()
@@ -1945,7 +1945,7 @@ async def cb_admin_promo_post(query: CallbackQuery, bot: Bot, state: FSMContext)
 @router.message(Command("addref"))
 async def cmd_admin_addref(message: Message, bot: Bot) -> None:
     """Tezkor komanda: /addref @username 5 yoki /addref 123456789 5"""
-    if not ADMIN_ID or not message.from_user or message.from_user.id != ADMIN_ID:
+    if not ADMIN_IDS or not message.from_user or message.from_user.id not in ADMIN_IDS:
         return
 
     parts = message.text.split() if message.text else []
@@ -1990,7 +1990,7 @@ async def cmd_admin_addref(message: Message, bot: Bot) -> None:
 @router.message(Command("addball"))
 async def cmd_admin_addball(message: Message, bot: Bot) -> None:
     """Tezkor komanda: /addball @username 10 yoki /addball 123456789 10"""
-    if not ADMIN_ID or not message.from_user or message.from_user.id != ADMIN_ID:
+    if not ADMIN_IDS or not message.from_user or message.from_user.id not in ADMIN_IDS:
         return
 
     parts = message.text.split() if message.text else []
@@ -2580,7 +2580,7 @@ async def cb_check_sub(query: CallbackQuery, bot: Bot) -> None:
 @router.message(Command("tekshir"))
 async def cmd_tekshir(message: Message, bot: Bot) -> None:
     """Bot sozlamalarini va barcha ulangan chatlarni tekshirish (faqat bot egasi)."""
-    if not ADMIN_ID or not message.from_user or message.from_user.id != ADMIN_ID:
+    if not ADMIN_IDS or not message.from_user or message.from_user.id not in ADMIN_IDS:
         return
 
     lines = ["🔍 <b>Bot diagnostikasi va ulangan chatlar:</b>\n"]
@@ -2633,7 +2633,7 @@ async def _is_group_admin(message: Message, bot: Bot) -> bool:
     if message.from_user.id in (777000, 1087968824):
         return True
     # 4. Bot egasi (ADMIN_ID)
-    if ADMIN_ID and message.from_user.id == ADMIN_ID:
+    if ADMIN_IDS and message.from_user.id in ADMIN_IDS:
         return True
     # 5. Guruh admini yoki egasi
     try:
@@ -2753,7 +2753,7 @@ async def cmd_tag_all(message: Message, bot: Bot) -> None:
 
     # Adminligini tekshirish
     is_admin = False
-    if message.from_user.id == ADMIN_ID:
+    if message.from_user.id in ADMIN_IDS:
         is_admin = True
     else:
         try:
@@ -3061,7 +3061,7 @@ async def on_group_message(message: Message, bot: Bot) -> None:
 @router.message(Command("backup"))
 async def cmd_admin_backup(message: Message, bot: Bot) -> None:
     """Admin uchun bazani yuklab olish komandasi."""
-    if not ADMIN_ID or not message.from_user or message.from_user.id != ADMIN_ID:
+    if not ADMIN_IDS or not message.from_user or message.from_user.id not in ADMIN_IDS:
         return
         
     db_path = DB_PATH
@@ -3086,7 +3086,7 @@ async def cmd_admin_backup(message: Message, bot: Bot) -> None:
 @router.message(F.document)
 async def admin_restore_db(message: Message, bot: Bot) -> None:
     """Admin .db faylini yuborganda bazani tiklash."""
-    if not ADMIN_ID or not message.from_user or message.from_user.id != ADMIN_ID:
+    if not ADMIN_IDS or not message.from_user or message.from_user.id not in ADMIN_IDS:
         return
         
     if not message.document or not message.document.file_name:
